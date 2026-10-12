@@ -9,16 +9,17 @@ MEXC_API_SECRET = os.environ.get("MEXC_API_SECRET", "").strip()
 BOT_TOKEN = os.environ.get("BOT_TOKEN", "").strip()
 CHAT_ID = os.environ.get("CHAT_ID", "").strip()
 
-# === CONFIG V2.3 2-WAY 5X (BEST WR 81%) ===
+# === CONFIG V2.3 2-WAY 5X FIX SYMBOL ===
 SYMBOL = "GOLD_USDT"
-SYMBOL_CCXT = "GOLD_USDT"
+SYMBOL_CCXT = "GOLD/USDT:USDT"  # FIX: ใช้ format มาตรฐาน CCXT สำหรับ futures
+SYMBOL_FALLBACKS = ["GOLD/USDT:USDT", "GOLD_USDT", "GOLD/USDT", "XAU/USDT:USDT", "XAUUSDT"]
 RENDER_URL = "https://v6-cloud-bot-1.onrender.com"
 INTERVAL = "15m"
 
-ORDER_PERCENT = 6        # 6% เดิมดีสุด
-LEVERAGE = 5             # 5X WR 81.2% ดีกว่า 10X
-TP_PCT = 2.5             # 0.5% ราคา
-SL_PCT = 0.6             # 0.12% ราคา
+ORDER_PERCENT = 6
+LEVERAGE = 5
+TP_PCT = 2.5
+SL_PCT = 0.6
 TRAIL_START_PCT = 0.4
 TRAIL_PCT = 0.7
 TRAIL_SUPER_PCT = 1.2
@@ -81,24 +82,14 @@ def check_max_hold():
 def home():
     wr = (stats["wins"]/stats["total_trades"]*100) if stats["total_trades"]>0 else 0
     side = positions[0]['side'] if positions else "ว่าง"
-    try:
-        dbg = get_all_prices_debug()
-        dbg_str = " | ".join([f"{k}:{v}" for k,v in dbg.items()])
-    except:
-        dbg_str = last_price_source
-    return f"V2.3 2WAY GOLD WR:{wr:.1f}% PnL:{stats['total_pnl_pct']:+.2f}% Pos:{len(positions)} {side}<br>PriceSrc:{last_price_source}<br>All:{dbg_str}"
+    return f"V2.3 2WAY GOLD WR:{wr:.1f}% PnL:{stats['total_pnl_pct']:+.2f}% Pos:{len(positions)} {side}"
 
 @app.route('/stats')
 def stats_page():
     wr = (stats["wins"]/stats["total_trades"]*100) if stats["total_trades"]>0 else 0
     hist = "".join([f"{h['time']} {h['type']} {h['pnl']:+.2f}%<br>" for h in stats["history"][-15:]])
     side = positions[0]['side'] if positions else "ว่าง"
-    try:
-        dbg = get_all_prices_debug()
-        dbg_html = "<br>".join([f"{k}: {v}" for k,v in dbg.items()])
-    except Exception as e:
-        dbg_html = f"debug fail {e}"
-    return f"<h2>V2.3 2WAY LONG/SHORT TP{TP_PCT}% SL{SL_PCT}% ADX>{ADX_THRESHOLD} {side} Trail:{trail_sl:.1f}</h2>Trades:{stats['total_trades']} WR:{wr:.1f}% Total:{stats['total_pnl_pct']:+.2f}% Daily:{stats['daily_pnl']:+.2f}%<br>Src:{last_price_source}<br><hr><b>All Prices:</b><br>{dbg_html}<br><hr>{hist}"
+    return f"<h2>V2.3 2WAY LONG/SHORT TP{TP_PCT}% SL{SL_PCT}% ADX>{ADX_THRESHOLD} {side} Trail:{trail_sl:.1f}</h2>Trades:{stats['total_trades']} WR:{wr:.1f}% Total:{stats['total_pnl_pct']:+.2f}% Daily:{stats['daily_pnl']:+.2f}%<br><hr>{hist}"
 
 def send_telegram(msg):
     if not BOT_TOKEN or not CHAT_ID: return False
@@ -115,10 +106,11 @@ def get_price_mexc():
     # ดึงราคาให้ครบทุกแหล่ง - ลอง 5 แหล่ง
     sources = [
         (SYMBOL_CCXT, "ccxt"),
+        ("GOLD/USDT:USDT", "ccxt_GOLD/USDT:USDT"),
         ("GOLD_USDT", "ccxt_GOLD_USDT"),
         ("XAUUSDT", "ccxt_XAUUSDT"),
-        ("GOLD", "ccxt_GOLD"),
-        ("XAU_USDT", "ccxt_XAU_USDT"),
+        ("GOLD/USDT", "ccxt_GOLD/USDT"),
+        ("XAU/USDT:USDT", "ccxt_XAU/USDT:USDT"),
     ]
     for sym, name in sources:
         try:
@@ -156,8 +148,7 @@ def get_price_mexc():
     return None
 
 def get_klines_mexc(limit=200):
-    # ดึง klines ให้ครบ - ลอง 3 symbol + 2 timeframe
-    symbols_try = [SYMBOL_CCXT, "GOLD_USDT", "XAUUSDT", "GOLD", "XAU_USDT"]
+    symbols_try = [SYMBOL_CCXT, "GOLD/USDT:USDT", "GOLD_USDT", "XAUUSDT", "GOLD/USDT", "XAU/USDT:USDT"]
     for sym in symbols_try:
         try:
             ohlcv = mexc_public.fetch_ohlcv(sym, timeframe='15m', limit=limit)
@@ -168,30 +159,7 @@ def get_klines_mexc(limit=200):
         except Exception as e:
             print(f"[KLINE FAIL] {sym} 15m {e}")
             continue
-    
-    # ถ้า 15m ไม่ได้ ลอง 1h แล้วแปลง
-    for sym in symbols_try[:3]:
-        try:
-            ohlcv = mexc_public.fetch_ohlcv(sym, timeframe='1h', limit=100)
-            df = pd.DataFrame(ohlcv, columns=['ot','o','h','l','c','v'])
-            if len(df) >= 20:
-                print(f"[KLINE OK] {sym} 1h fallback len={len(df)}")
-                return df
-        except:
-            continue
     return None
-
-def get_all_prices_debug():
-    """ดึงราคาทุกแหล่งมาเทียบกัน - ไว้ดูใน /stats"""
-    prices = {}
-    for sym in ["GOLD_USDT", "GOLDUSDT", "XAUUSDT", "XAU_USDT", "GOLD"]:
-        try:
-            t = mexc_public.fetch_ticker(sym)
-            p = float(t.get('last') or t.get('close') or 0)
-            prices[sym] = p
-        except Exception as e:
-            prices[sym] = f"FAIL {e}"
-    return prices
 
 def calc_lite(df):
     df['hlc3'] = (df['h'] + df['l'] + df['c']) / 3
@@ -264,59 +232,85 @@ def mexc_buy(price,factor):
     if not mexc: 
         print(f"[DEMO] BUY {price}")
         return True, 0.001
-    try:
-        total,free,_=get_balance()
-        bal = total if total>0 else free
-        if bal < 5: 
-            print("Balance too low")
-            return False, 0
-        usdt_amount = bal*(ORDER_PERCENT/100)*factor
-        qty = round(max(usdt_amount/price, 0.001), 4)
+    # ลองทุก symbol ที่เป็นไปได้
+    for sym in SYMBOL_FALLBACKS:
         try:
-            mexc.set_leverage(LEVERAGE, SYMBOL_CCXT)
-        except: pass
-        order = mexc.create_market_buy_order(SYMBOL_CCXT, qty)
-        print(f"BUY order {order}")
-        return True, qty
-    except Exception as e:
-        print(f"BUY err {e}")
-        send_telegram(f"❌ BUY ล้มเหลว {e}")
-        return False, 0
+            total,free,_=get_balance()
+            bal = total if total>0 else free
+            if bal < 5: 
+                print("Balance too low")
+                return False, 0
+            usdt_amount = bal*(ORDER_PERCENT/100)*factor
+            qty = round(max(usdt_amount/price, 0.001), 4)
+            try:
+                mexc.set_leverage(LEVERAGE, sym)
+            except: pass
+            order = mexc.create_market_buy_order(sym, qty)
+            print(f"BUY OK {sym} qty {qty} order {order}")
+            return True, qty
+        except Exception as e:
+            print(f"BUY FAIL {sym} err {e}")
+            if "does not have market symbol" in str(e) or "symbol" in str(e).lower():
+                continue  # ลอง symbol ถัดไป
+            # ถ้า error อื่น (balance, etc) ให้หยุด
+            if "balance" in str(e).lower() or "insufficient" in str(e).lower():
+                send_telegram(f"❌ BUY ล้มเหลว {e}")
+                return False, 0
+            continue
+    # ลองหมดแล้วยังไม่ได้
+    err_msg = f"BUY ทุก symbol ล้มเหลว {SYMBOL_FALLBACKS}"
+    print(err_msg)
+    send_telegram(f"❌ {err_msg}")
+    return False, 0
 
 def mexc_sell(price,factor):
     if not mexc: 
         print(f"[DEMO] SELL {price}")
         return True, 0.001
-    try:
-        total,free,_=get_balance()
-        bal = total if total>0 else free
-        if bal < 5: 
-            return False, 0
-        usdt_amount = bal*(ORDER_PERCENT/100)*factor
-        qty = round(max(usdt_amount/price, 0.001), 4)
+    for sym in SYMBOL_FALLBACKS:
         try:
-            mexc.set_leverage(LEVERAGE, SYMBOL_CCXT)
-        except: pass
-        order = mexc.create_market_sell_order(SYMBOL_CCXT, qty)
-        print(f"SELL order {order}")
-        return True, qty
-    except Exception as e:
-        print(f"SELL err {e}")
-        send_telegram(f"❌ SELL ล้มเหลว {e}")
-        return False, 0
+            total,free,_=get_balance()
+            bal = total if total>0 else free
+            if bal < 5: 
+                return False, 0
+            usdt_amount = bal*(ORDER_PERCENT/100)*factor
+            qty = round(max(usdt_amount/price, 0.001), 4)
+            try:
+                mexc.set_leverage(LEVERAGE, sym)
+            except: pass
+            order = mexc.create_market_sell_order(sym, qty)
+            print(f"SELL OK {sym} qty {qty} order {order}")
+            return True, qty
+        except Exception as e:
+            print(f"SELL FAIL {sym} err {e}")
+            if "does not have market symbol" in str(e) or "symbol" in str(e).lower():
+                continue
+            if "balance" in str(e).lower() or "insufficient" in str(e).lower():
+                send_telegram(f"❌ SELL ล้มเหลว {e}")
+                return False, 0
+            continue
+    err_msg = f"SELL ทุก symbol ล้มเหลว {SYMBOL_FALLBACKS}"
+    print(err_msg)
+    send_telegram(f"❌ {err_msg}")
+    return False, 0
 
 def mexc_close_all():
     if not mexc: return True
-    try:
-        mexc.create_order(SYMBOL_CCXT, 'market', 'sell', 0, None, {'reduceOnly': True, 'closePosition': True})
-        return True
-    except:
+    for sym in SYMBOL_FALLBACKS:
         try:
-            mexc.create_order(SYMBOL_CCXT, 'market', 'buy', 0, None, {'reduceOnly': True, 'closePosition': True})
+            mexc.create_order(sym, 'market', 'sell', 0, None, {'reduceOnly': True, 'closePosition': True})
+            print(f"CLOSE SELL OK {sym}")
             return True
-        except Exception as e:
-            print(f"CLOSE err {e}")
-            return False
+        except:
+            try:
+                mexc.create_order(sym, 'market', 'buy', 0, None, {'reduceOnly': True, 'closePosition': True})
+                print(f"CLOSE BUY OK {sym}")
+                return True
+            except Exception as e:
+                print(f"CLOSE FAIL {sym} {e}")
+                continue
+    print("CLOSE ALL FAIL")
+    return False
 
 def close_position(price,typ):
     global positions,stats,trail_sl,be_done,cooldown_until
