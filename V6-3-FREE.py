@@ -81,14 +81,24 @@ def check_max_hold():
 def home():
     wr = (stats["wins"]/stats["total_trades"]*100) if stats["total_trades"]>0 else 0
     side = positions[0]['side'] if positions else "ว่าง"
-    return f"V2.3 2WAY GOLD WR:{wr:.1f}% PnL:{stats['total_pnl_pct']:+.2f}% Pos:{len(positions)} {side}"
+    try:
+        dbg = get_all_prices_debug()
+        dbg_str = " | ".join([f"{k}:{v}" for k,v in dbg.items()])
+    except:
+        dbg_str = last_price_source
+    return f"V2.3 2WAY GOLD WR:{wr:.1f}% PnL:{stats['total_pnl_pct']:+.2f}% Pos:{len(positions)} {side}<br>PriceSrc:{last_price_source}<br>All:{dbg_str}"
 
 @app.route('/stats')
 def stats_page():
     wr = (stats["wins"]/stats["total_trades"]*100) if stats["total_trades"]>0 else 0
     hist = "".join([f"{h['time']} {h['type']} {h['pnl']:+.2f}%<br>" for h in stats["history"][-15:]])
     side = positions[0]['side'] if positions else "ว่าง"
-    return f"<h2>V2.3 2WAY LONG/SHORT TP{TP_PCT}% SL{SL_PCT}% ADX>{ADX_THRESHOLD} {side} Trail:{trail_sl:.1f}</h2>Trades:{stats['total_trades']} WR:{wr:.1f}% Total:{stats['total_pnl_pct']:+.2f}% Daily:{stats['daily_pnl']:+.2f}%<br><hr>{hist}"
+    try:
+        dbg = get_all_prices_debug()
+        dbg_html = "<br>".join([f"{k}: {v}" for k,v in dbg.items()])
+    except Exception as e:
+        dbg_html = f"debug fail {e}"
+    return f"<h2>V2.3 2WAY LONG/SHORT TP{TP_PCT}% SL{SL_PCT}% ADX>{ADX_THRESHOLD} {side} Trail:{trail_sl:.1f}</h2>Trades:{stats['total_trades']} WR:{wr:.1f}% Total:{stats['total_pnl_pct']:+.2f}% Daily:{stats['daily_pnl']:+.2f}%<br>Src:{last_price_source}<br><hr><b>All Prices:</b><br>{dbg_html}<br><hr>{hist}"
 
 def send_telegram(msg):
     if not BOT_TOKEN or not CHAT_ID: return False
@@ -102,39 +112,86 @@ def send_telegram(msg):
 
 def get_price_mexc():
     global last_price_source
+    # ดึงราคาให้ครบทุกแหล่ง - ลอง 5 แหล่ง
+    sources = [
+        (SYMBOL_CCXT, "ccxt"),
+        ("GOLD_USDT", "ccxt_GOLD_USDT"),
+        ("XAUUSDT", "ccxt_XAUUSDT"),
+        ("GOLD", "ccxt_GOLD"),
+        ("XAU_USDT", "ccxt_XAU_USDT"),
+    ]
+    for sym, name in sources:
+        try:
+            t = mexc_public.fetch_ticker(sym)
+            price = float(t.get('last') or t.get('close') or t.get('bid') or 0)
+            if price > 100:
+                last_price_source = f"{sym}-{name} {price:.2f}"
+                print(f"[PRICE OK] {sym} = {price}")
+                return price
+        except Exception as e:
+            print(f"[PRICE FAIL] {sym} err {e}")
+            continue
+
+    # Fallback REST API
     try:
-        t = mexc_public.fetch_ticker(SYMBOL_CCXT)
-        price = float(t.get('last') or t.get('close') or 0)
-        if price > 1000:
-            last_price_source = f"{SYMBOL_CCXT}"
+        r = requests.get("https://contract.mexc.com/api/v1/contract/ticker", params={"symbol": "GOLD_USDT"}, timeout=10)
+        j = r.json()
+        price = float(j.get('data', {}).get('lastPrice') or j.get('data', {}).get('last') or 0)
+        if price > 100:
+            last_price_source = f"GOLD_USDT-contract REST {price:.2f}"
+            print(f"[PRICE REST OK] {price}")
             return price
     except Exception as e:
-        print(f"price ccxt err {e}")
+        print(f"[PRICE REST FAIL] {e}")
+
     try:
-        r = requests.get("https://contract.mexc.com/api/v1/contract/ticker", params={"symbol": "GOLD_USDT"}, timeout=8)
+        r = requests.get("https://contract.mexc.com/api/v1/contract/ticker", params={"symbol": "GOLDUSDT"}, timeout=10)
         price = float(r.json().get('data', {}).get('lastPrice') or 0)
-        if price > 1000:
-            last_price_source = "GOLD_USDT-contract"
+        if price > 100:
+            last_price_source = f"GOLDUSDT-contract REST {price:.2f}"
             return price
     except: pass
-    try:
-        t = mexc_public.fetch_ticker("XAUUSDT")
-        price = float(t.get('last') or 0)
-        if price > 1000:
-            last_price_source = "XAUUSDT-fallback"
-            return price
-    except: return None
+
+    print("[PRICE ALL FAIL] return None")
     return None
 
-def get_klines_mexc(limit=150):
-    for sym in [SYMBOL_CCXT, "GOLD_USDT", "XAUUSDT"]:
+def get_klines_mexc(limit=200):
+    # ดึง klines ให้ครบ - ลอง 3 symbol + 2 timeframe
+    symbols_try = [SYMBOL_CCXT, "GOLD_USDT", "XAUUSDT", "GOLD", "XAU_USDT"]
+    for sym in symbols_try:
         try:
             ohlcv = mexc_public.fetch_ohlcv(sym, timeframe='15m', limit=limit)
             df = pd.DataFrame(ohlcv, columns=['ot','o','h','l','c','v'])
-            if len(df) > 80:
+            if len(df) >= 50:
+                print(f"[KLINE OK] {sym} 15m len={len(df)} last={df.iloc[-1]['c']}")
                 return df
-        except: continue
+        except Exception as e:
+            print(f"[KLINE FAIL] {sym} 15m {e}")
+            continue
+    
+    # ถ้า 15m ไม่ได้ ลอง 1h แล้วแปลง
+    for sym in symbols_try[:3]:
+        try:
+            ohlcv = mexc_public.fetch_ohlcv(sym, timeframe='1h', limit=100)
+            df = pd.DataFrame(ohlcv, columns=['ot','o','h','l','c','v'])
+            if len(df) >= 20:
+                print(f"[KLINE OK] {sym} 1h fallback len={len(df)}")
+                return df
+        except:
+            continue
     return None
+
+def get_all_prices_debug():
+    """ดึงราคาทุกแหล่งมาเทียบกัน - ไว้ดูใน /stats"""
+    prices = {}
+    for sym in ["GOLD_USDT", "GOLDUSDT", "XAUUSDT", "XAU_USDT", "GOLD"]:
+        try:
+            t = mexc_public.fetch_ticker(sym)
+            p = float(t.get('last') or t.get('close') or 0)
+            prices[sym] = p
+        except Exception as e:
+            prices[sym] = f"FAIL {e}"
+    return prices
 
 def calc_lite(df):
     df['hlc3'] = (df['h'] + df['l'] + df['c']) / 3
