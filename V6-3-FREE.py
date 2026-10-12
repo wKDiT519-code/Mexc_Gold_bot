@@ -9,16 +9,16 @@ MEXC_API_SECRET = os.environ.get("MEXC_API_SECRET", "").strip()
 BOT_TOKEN = os.environ.get("BOT_TOKEN", "").strip()
 CHAT_ID = os.environ.get("CHAT_ID", "").strip()
 
-# === CONFIG V2.3 2-WAY ===
+# === CONFIG V2.3 2-WAY 5X (BEST WR 81%) ===
 SYMBOL = "GOLD_USDT"
 SYMBOL_CCXT = "GOLD_USDT"
 RENDER_URL = "https://v6-cloud-bot-1.onrender.com"
 INTERVAL = "15m"
 
-ORDER_PERCENT = 6
-LEVERAGE = 5
-TP_PCT = 2.5
-SL_PCT = 0.6
+ORDER_PERCENT = 6        # 6% เดิมดีสุด
+LEVERAGE = 5             # 5X WR 81.2% ดีกว่า 10X
+TP_PCT = 2.5             # 0.5% ราคา
+SL_PCT = 0.6             # 0.12% ราคา
 TRAIL_START_PCT = 0.4
 TRAIL_PCT = 0.7
 TRAIL_SUPER_PCT = 1.2
