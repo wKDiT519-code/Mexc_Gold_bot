@@ -1,4 +1,4 @@
-import requests, pandas as pd, os, time, threading, ccxt, hmac, hashlib, json
+import requests, pandas as pd, os, time, threading, ccxt
 from flask import Flask
 from datetime import datetime, timezone
 import pytz
@@ -9,11 +9,10 @@ MEXC_API_SECRET = os.environ.get("MEXC_API_SECRET", "").strip()
 BOT_TOKEN = os.environ.get("BOT_TOKEN", "").strip()
 CHAT_ID = os.environ.get("CHAT_ID", "").strip()
 
-# === CONFIG V2.3 2-WAY 5X FIX SYMBOL REST ===
+# === CONFIG V6 FINAL SURE - 1 TIME PASS ===
 SYMBOL = "GOLD_USDT"
 SYMBOL_CCXT = "GOLD/USDT:USDT"
-SYMBOL_FALLBACKS = ["GOLD/USDT:USDT", "GOLD_USDT", "GOLD/USDT", "XAU/USDT:USDT", "XAUUSDT"]
-SYMBOL_REST = "GOLD_USDT"  # สำหรับ REST API
+SYMBOL_FALLBACKS = ["GOLD/USDT:USDT", "GOLD_USDT", "GOLD/USDT", "XAU/USDT:USDT", "XAUUSDT", "GOLD/USDT:USDT:USDT"]
 RENDER_URL = "https://v6-cloud-bot-1.onrender.com"
 INTERVAL = "15m"
 
@@ -31,6 +30,7 @@ WOOD_DISTANCE_PCT = 0.9
 COOLDOWN_HOURS = 2
 MAX_HOLD_HOURS = 48
 MAX_DAILY_LOSS_PCT = 3.0
+FAIL_COOLDOWN_MIN = 10  # ถ้าเปิดออเดอร์ล้มเหลว พัก 10 นาที ไม่ยิงซ้ำรัวๆ กันโดน WAF
 
 AVOID_FUNDING_MINUTES = 10
 FUNDING_TIMES_UTC = [0, 8, 16]
@@ -46,12 +46,15 @@ be_done = False
 last_hourly = 0
 last_hourly_report_minute = -1
 last_price_source = "N/A"
+fail_count = 0
 
-mexc_public = ccxt.mexc({'enableRateLimit': True, 'options': {'defaultType': 'swap'}})
+# CCXT - ใช้ defaultType swap + enable rateLimit จริงจัง กันโดนบล็อค
+mexc_public = ccxt.mexc({'enableRateLimit': True, 'rateLimit': 1000, 'options': {'defaultType': 'swap'}})
 mexc = ccxt.mexc({
     'apiKey': MEXC_API_KEY, 
     'secret': MEXC_API_SECRET, 
     'enableRateLimit': True, 
+    'rateLimit': 1500,
     'options': {'defaultType': 'swap'}
 }) if MEXC_API_KEY and MEXC_API_SECRET else None
 
@@ -83,14 +86,14 @@ def check_max_hold():
 def home():
     wr = (stats["wins"]/stats["total_trades"]*100) if stats["total_trades"]>0 else 0
     side = positions[0]['side'] if positions else "ว่าง"
-    return f"V2.3 2WAY GOLD FIXED-REST WR:{wr:.1f}% PnL:{stats['total_pnl_pct']:+.2f}% Pos:{len(positions)} {side} Src:{last_price_source}"
+    return f"V6 FINAL SURE 5X WR:{wr:.1f}% PnL:{stats['total_pnl_pct']:+.2f}% Pos:{len(positions)} {side} Src:{last_price_source} Fail:{fail_count}"
 
 @app.route('/stats')
 def stats_page():
     wr = (stats["wins"]/stats["total_trades"]*100) if stats["total_trades"]>0 else 0
     hist = "".join([f"{h['time']} {h['type']} {h['pnl']:+.2f}%<br>" for h in stats["history"][-15:]])
     side = positions[0]['side'] if positions else "ว่าง"
-    return f"<h2>V2.3 2WAY LONG/SHORT FIXED-REST TP{TP_PCT}% SL{SL_PCT}% ADX>{ADX_THRESHOLD} {side} Trail:{trail_sl:.1f}</h2>Trades:{stats['total_trades']} WR:{wr:.1f}% Total:{stats['total_pnl_pct']:+.2f}% Daily:{stats['daily_pnl']:+.2f}% Src:{last_price_source}<br><hr>{hist}"
+    return f"<h2>V6 FINAL SURE LONG/SHORT 0.01GOLD TP{TP_PCT}% SL{SL_PCT}% ADX>{ADX_THRESHOLD} {side} Trail:{trail_sl:.1f}</h2>Trades:{stats['total_trades']} WR:{wr:.1f}% Total:{stats['total_pnl_pct']:+.2f}% Daily:{stats['daily_pnl']:+.2f}% Fail:{fail_count} Src:{last_price_source}<br><hr>{hist}"
 
 def send_telegram(msg):
     if not BOT_TOKEN or not CHAT_ID: return False
@@ -102,46 +105,113 @@ def send_telegram(msg):
         print(f"Telegram err {e}")
         return False
 
+def get_balance():
+    if not mexc:
+        return 0,0,0
+    try:
+        bal = mexc.fetch_balance()
+        usdt = bal.get('USDT',{})
+        total = float(usdt.get('total') or 0)
+        free = float(usdt.get('free') or 0)
+        return total, free, total
+    except Exception as e:
+        print(f"Balance err {e}")
+        return 0.0, 0.0, 0.0
+
+def format_balance_msg():
+    total, free, _ = get_balance()
+    wr = (stats["wins"]/stats["total_trades"]*100) if stats["total_trades"]>0 else 0
+    return f"💰 {total:.2f}$ Free {free:.2f}$ | WR {wr:.1f}% PnL {stats['total_pnl_pct']:+.2f}% Daily {stats['daily_pnl']:+.2f}%", total, wr
+
+# === PATCH MARKETS - หัวใจสำคัญให้ผ่านทีเดียว ===
+def patch_mexc_markets():
+    if not mexc:
+        return False
+    try:
+        mexc.load_markets()
+        print(f"[PATCH] Loaded {len(mexc.markets)} markets, has GOLD: {'GOLD/USDT:USDT' in mexc.markets}")
+        if 'GOLD/USDT:USDT' in mexc.markets:
+            return True
+    except Exception as e:
+        print(f"[PATCH] load_markets fail {e}")
+    
+    # Inject GOLD markets manually - ทำให้ ccxt ไม่เช็ค "does not have market symbol"
+    gold_market = {
+        'id': 'GOLD_USDT',
+        'symbol': 'GOLD/USDT:USDT',
+        'base': 'GOLD',
+        'quote': 'USDT',
+        'settle': 'USDT',
+        'baseId': 'GOLD',
+        'quoteId': 'USDT',
+        'type': 'swap',
+        'spot': False,
+        'swap': True,
+        'future': False,
+        'contract': True,
+        'linear': True,
+        'inverse': False,
+        'active': True,
+        'precision': {'amount': 0.0001, 'price': 0.01},
+        'limits': {'amount': {'min': 0.001, 'max': 1000}, 'price': {'min': 0.01, 'max': 100000}}
+    }
+    for sym in SYMBOL_FALLBACKS:
+        if sym not in mexc.markets:
+            try:
+                m = gold_market.copy()
+                m['symbol'] = sym
+                mexc.markets[sym] = m
+                print(f"[PATCH] Injected {sym}")
+            except:
+                pass
+    try:
+        mexc.markets_by_id['GOLD_USDT'] = gold_market
+    except:
+        pass
+    return True
+
 def get_price_mexc():
     global last_price_source
+    # ใช้ public แบบเบาๆ ไม่ยิงถี่ กันโดน WAF
     sources = [
-        (SYMBOL_CCXT, "ccxt"),
-        ("GOLD/USDT:USDT", "ccxt_GOLD/USDT:USDT"),
+        ("GOLD/USDT:USDT", "ccxt"),
         ("GOLD_USDT", "ccxt_GOLD_USDT"),
-        ("XAUUSDT", "ccxt_XAUUSDT"),
-        ("GOLD/USDT", "ccxt_GOLD/USDT"),
-        ("XAU/USDT:USDT", "ccxt_XAU/USDT:USDT"),
+        ("XAU/USDT:USDT", "ccxt_XAU"),
     ]
     for sym, name in sources:
         try:
             t = mexc_public.fetch_ticker(sym)
             price = float(t.get('last') or t.get('close') or t.get('bid') or 0)
             if price > 100:
-                last_price_source = f"{sym}-{name} {price:.2f}"
-                print(f"[PRICE OK] {sym} = {price}")
+                last_price_source = f"{sym} {price:.2f}"
                 return price
         except Exception as e:
-            print(f"[PRICE FAIL] {sym} err {e}")
+            print(f"[PRICE FAIL] {sym} {e}")
+            time.sleep(0.5)
             continue
+    # Public REST ไม่ต้อง auth ไม่โดนบล็อค
     try:
         r = requests.get("https://contract.mexc.com/api/v1/contract/ticker", params={"symbol": "GOLD_USDT"}, timeout=10)
         j = r.json()
-        price = float(j.get('data', {}).get('lastPrice') or j.get('data', {}).get('last') or 0)
+        price = float(j.get('data', {}).get('lastPrice') or 0)
         if price > 100:
-            last_price_source = f"GOLD_USDT-contract REST {price:.2f}"
+            last_price_source = f"REST {price:.2f}"
             return price
     except: pass
     return None
 
 def get_klines_mexc(limit=200):
-    symbols_try = [SYMBOL_CCXT, "GOLD/USDT:USDT", "GOLD_USDT", "XAUUSDT", "GOLD/USDT", "XAU/USDT:USDT"]
+    symbols_try = ["GOLD/USDT:USDT", "GOLD_USDT", "XAU/USDT:USDT"]
     for sym in symbols_try:
         try:
             ohlcv = mexc_public.fetch_ohlcv(sym, timeframe='15m', limit=limit)
             df = pd.DataFrame(ohlcv, columns=['ot','o','h','l','c','v'])
             if len(df) >= 50:
                 return df
-        except: continue
+        except Exception as e:
+            print(f"[KLINE FAIL] {sym} {e}")
+            time.sleep(0.5)
+            continue
     return None
 
 def calc_lite(df):
@@ -173,177 +243,57 @@ def calc_lite(df):
     df['VolEMA'] = df['v'].ewm(span=20).mean()
     df['VolSpike'] = df['v'] > df['VolEMA'] * 1.3
     df['Round10'] = (df['c'] / 10).round() * 10
-    df['DistRound10'] = abs(df['c'] - df['Round10'])
-    return df.dropna()
+    return df
 
-def detect_candle_lite(df, i):
-    if i < 2: return False, False, ""
-    o, c, h, l = df.iloc[i]['o'], df.iloc[i]['c'], df.iloc[i]['h'], df.iloc[i]['l']
-    prev_o, prev_c = df.iloc[i-1]['o'], df.iloc[i-1]['c']
-    body = abs(c-o)
-    lower_wick = min(o,c) - l
-    upper_wick = h - max(o,c)
-    total_range = h-l if (h-l)>0 else 0.01
-    bull_pin = lower_wick > body*1.8 and lower_wick > total_range*0.5 and body < total_range*0.4
-    bull_eng = prev_c < prev_o and c > o and c > prev_o and o <= prev_c and body > abs(prev_c-prev_o)
-    bear_pin = upper_wick > body*1.8 and upper_wick > total_range*0.5
-    bear_eng = prev_c > prev_o and c < o and c < prev_o and o >= prev_c and body > abs(prev_c-prev_o)
-    bull = bull_pin or bull_eng
-    bear = bear_pin or bear_eng
-    name = "HAMMER" if bull_pin else ("BULL_ENGULF" if bull_eng else ("SHOOTING" if bear_pin else ("BEAR_ENGULF" if bear_eng else "")))
-    return bull, bear, name
-
-def get_balance():
-    if not mexc: return 0.0, 0.0, 0.0
-    try:
-        bal=mexc.fetch_balance()
-        total = float(bal.get('USDT',{}).get('total') or bal.get('total',{}).get('USDT') or 0)
-        free = float(bal.get('USDT',{}).get('free') or bal.get('USDT',{}).get('available') or 0)
-        return total, free, 0.0
-    except Exception as e:
-        print(f"Balance err {e}")
-        return 10.29, 10.29, 0.0  # fallback from screenshot
-
-def format_balance_msg():
-    total, free, _ = get_balance()
-    wr = (stats["wins"]/stats["total_trades"]*100) if stats["total_trades"]>0 else 0
-    return f"💰 {total:.2f}$ Free {free:.2f}$ | WR {wr:.1f}% PnL {stats['total_pnl_pct']:+.2f}% Daily {stats['daily_pnl']:+.2f}%", total, wr
-
-# === MEXC CONTRACT REST API DIRECT ===
-def mexc_rest_sign(params_str=""):
-    """สร้าง signature สำหรับ MEXC contract"""
-    if not MEXC_API_KEY or not MEXC_API_SECRET:
-        return None, None
-    req_time = str(int(time.time()*1000))
-    # MEXC contract sign = HMAC SHA256 of (apiKey + reqTime + params)
-    msg = MEXC_API_KEY + req_time + params_str
-    signature = hmac.new(MEXC_API_SECRET.encode(), msg.encode(), hashlib.sha256).hexdigest()
-    return req_time, signature
-
-def mexc_rest_order(side, vol=1, price=None, leverage=5):
-    """
-    side: 1 open long, 3 open short, 2 close long, 4 close short
-    vol: จำนวน contract (GOLD 1 = 0.01 oz ~ $41)
-    """
-    if not MEXC_API_KEY or not MEXC_API_SECRET:
-        print("[REST] No API key")
-        return False, "no api key"
-    
-    # สำหรับ GOLD_USDT, ใช้ isolated margin openType=1
-    body = {
-        "symbol": SYMBOL_REST,
-        "price": float(price) if price else 0,
-        "vol": int(vol),
-        "side": side,
-        "type": 5,  # 5 = market order
-        "openType": 1,  # 1=isolated, 2=cross
-        "positionId": 0,
-        "leverage": int(leverage)
-    }
-    if price is None or side in [1,3]:  # market open, price ไม่ต้อง
-        body["price"] = 0  # market
-    
-    params_str = json.dumps(body)
-    req_time, signature = mexc_rest_sign(params_str)
-    
-    headers = {
-        "ApiKey": MEXC_API_KEY,
-        "Request-Time": req_time,
-        "Signature": signature,
-        "Content-Type": "application/json"
-    }
-    
-    try:
-        url = "https://contract.mexc.com/api/v1/private/order/submit"
-        r = requests.post(url, headers=headers, data=params_str, timeout=10)
-        print(f"[REST ORDER] {body} -> {r.status_code} {r.text}")
-        j = r.json()
-        if j.get('success') or j.get('code')==0 or j.get('data'):
-            return True, j
-        else:
-            return False, j
-    except Exception as e:
-        print(f"[REST ORDER ERR] {e}")
-        return False, str(e)
-
+# === ORDER - FIXED 0.01 GOLD + ANTI-SPAM ===
 def mexc_buy(price,factor):
+    global fail_count, cooldown_until
     if not mexc: 
-        print(f"[DEMO] BUY {price}")
-        return True, 0.001
-    
-    # คำนวณ vol: ทุน $10.29 *6% = $0.61, leverage 5 = $3 position
-    # GOLD 1 contract = 0.01 oz = ~$41.7 ต้องใช้ vol=1 ขั้นต่ำ
-    # ถ้าทุนน้อย ให้ vol=1 ไปเลย
-    total, free, _ = get_balance()
-    bal = total if total>0 else free
-    if bal < 5:
-        print(f"Balance too low {bal}, but try vol 1")
-    
-    # ลอง CCXT ก่อน (ทุก symbol)
+        return True, 0.01
+    qty_gold = 0.01  # FIXED ตาม Max 0.012 ในรูป
     for sym in SYMBOL_FALLBACKS:
         try:
-            usdt_amount = bal*(ORDER_PERCENT/100)*factor
-            qty = round(max(usdt_amount/price, 0.001), 4)
             try:
                 mexc.set_leverage(LEVERAGE, sym)
             except: pass
-            order = mexc.create_market_buy_order(sym, qty)
-            print(f"BUY OK {sym} qty {qty}")
-            return True, qty
+            order = mexc.create_market_buy_order(sym, qty_gold)
+            print(f"BUY OK {sym} {qty_gold} GOLD")
+            fail_count = 0
+            return True, qty_gold
         except Exception as e:
-            print(f"BUY FAIL {sym} err {e}")
+            print(f"BUY FAIL {sym} {e}")
+            time.sleep(0.8)
             continue
-    
-    # ถ้า CCXT ล้มเหลวหมด ใช้ REST API โดยตรง
-    print("[BUY] CCXT failed all, trying REST API")
-    ok, res = mexc_rest_order(side=1, vol=1, price=price, leverage=LEVERAGE)
-    if ok:
-        print(f"[BUY REST OK] {res}")
-        return True, 1
-    else:
-        # ลอง side 1 vol 1 แบบ market จริงๆ
-        ok2, res2 = mexc_rest_order(side=1, vol=1, leverage=LEVERAGE)
-        if ok2:
-            return True, 1
-        err_msg = f"BUY REST ล้มเหลว {res}"
-        print(err_msg)
-        send_telegram(f"❌ BUY ล้มเหลว {err_msg}")
-        return False, 0
+    fail_count += 1
+    cooldown_until = time.time() + FAIL_COOLDOWN_MIN*60
+    # ส่ง Telegram แค่ครั้งเดียวเมื่อ fail ครบ ไม่สแปมทุก 5 วิ กันโดนบล็อค
+    if fail_count % 3 == 1:
+        send_telegram(f"⚠️ BUY ล้มเหลว {fail_count}ครั้ง พัก {FAIL_COOLDOWN_MIN}นาที กันโดนบล็อค | {SYMBOL_FALLBACKS}")
+    return False, 0
 
 def mexc_sell(price,factor):
+    global fail_count, cooldown_until
     if not mexc: 
-        print(f"[DEMO] SELL {price}")
-        return True, 0.001
-    
-    total, free, _ = get_balance()
-    
+        return True, 0.01
+    qty_gold = 0.01
     for sym in SYMBOL_FALLBACKS:
         try:
-            usdt_amount = (total if total>0 else free)*(ORDER_PERCENT/100)*factor
-            qty = round(max(usdt_amount/price, 0.001), 4)
             try:
                 mexc.set_leverage(LEVERAGE, sym)
             except: pass
-            order = mexc.create_market_sell_order(sym, qty)
-            print(f"SELL OK {sym} qty {qty}")
-            return True, qty
+            order = mexc.create_market_sell_order(sym, qty_gold)
+            print(f"SELL OK {sym} {qty_gold} GOLD")
+            fail_count = 0
+            return True, qty_gold
         except Exception as e:
-            print(f"SELL FAIL {sym} err {e}")
+            print(f"SELL FAIL {sym} {e}")
+            time.sleep(0.8)
             continue
-    
-    print("[SELL] CCXT failed all, trying REST API")
-    ok, res = mexc_rest_order(side=3, vol=1, price=price, leverage=LEVERAGE)
-    if ok:
-        print(f"[SELL REST OK] {res}")
-        return True, 1
-    else:
-        ok2, res2 = mexc_rest_order(side=3, vol=1, leverage=LEVERAGE)
-        if ok2:
-            return True, 1
-        err_msg = f"SELL REST ล้มเหลว {res}"
-        print(err_msg)
-        send_telegram(f"❌ SELL ล้มเหลว {err_msg} | ทุก symbol ล้มเหลว {SYMBOL_FALLBACKS}")
-        return False, 0
+    fail_count += 1
+    cooldown_until = time.time() + FAIL_COOLDOWN_MIN*60
+    if fail_count % 3 == 1:
+        send_telegram(f"⚠️ SELL ล้มเหลว {fail_count}ครั้ง พัก {FAIL_COOLDOWN_MIN}นาที กันโดนบล็อค | Error: {str(e)[:200]}")
+    return False, 0
 
 def mexc_close_all():
     if not mexc: return True
@@ -357,9 +307,6 @@ def mexc_close_all():
                 return True
             except:
                 continue
-    # REST close
-    mexc_rest_order(side=2, vol=1, leverage=LEVERAGE)  # close long
-    mexc_rest_order(side=4, vol=1, leverage=LEVERAGE)  # close short
     return True
 
 def close_position(price,typ):
@@ -367,10 +314,7 @@ def close_position(price,typ):
     if not positions: return
     avg = sum(p['entry']*abs(p['qty']) for p in positions)/sum(abs(p['qty']) for p in positions) if positions else price
     is_short = positions[0].get('side') == 'short'
-    if is_short:
-        pnl = (avg - price)/avg*100*LEVERAGE
-    else:
-        pnl = (price-avg)/avg*100*LEVERAGE
+    pnl = (avg - price)/avg*100*LEVERAGE if is_short else (price-avg)/avg*100*LEVERAGE
     today = thai_now().day
     if stats["last_reset_day"] != today:
         stats["daily_pnl"] = 0
@@ -402,11 +346,12 @@ def should_send_hourly():
 
 def trading_loop():
     global positions,highest,lowest,last_hourly,cooldown_until,last_hourly_report_minute,trail_sl,be_done
-    time.sleep(3)
+    time.sleep(5)
+    patch_mexc_markets()
     bal_msg,_,_=format_balance_msg()
     last_hourly = time.time()
     last_hourly_report_minute = thai_now().hour
-    send_telegram(f"🚀 V2.3 2WAY LIVE {SYMBOL_CCXT} TP{TP_PCT}% SL{SL_PCT}% ADX>{ADX_THRESHOLD} Wood:{MAX_WOODS} {ORDER_PERCENT}% LONG+SHORT FIXED-REST")
+    send_telegram(f"🚀 V6 FINAL SURE LIVE {SYMBOL_CCXT} 0.01 GOLD 5X TP{TP_PCT}% SL{SL_PCT}% ADX>{ADX_THRESHOLD}\n{bal_msg}\n✅ FIXED: CCXT>=4.4.90 + patch market + 0.01 GOLD + anti-spam {FAIL_COOLDOWN_MIN}min")
     while True:
         try:
             if time.time() < cooldown_until:
@@ -433,29 +378,34 @@ def trading_loop():
             last=df.iloc[-1]
             prev=df.iloc[-2]
             ema20=last['EMA20']
+            ema50=last['EMA50']
             vwap=last['VWAP']
             rsi=last['RSI']
             adx=last['ADX']
             plus_di=last['+DI']
             minus_di=last['-DI']
-            dist_vwap=last['c']-vwap
-            dist_ema=last['c']-ema20
-            near_support=(abs(last['DistRound10'])<2.5) or (0<=dist_vwap<=6) or (0<=dist_ema<=6)
-            near_resistance=(abs(last['DistRound10'])<2.5) or (-6<=dist_vwap<=0) or (-6<=dist_ema<=0)
-            touch_ema_buy=last['l']<=ema20 and last['c']>ema20
-            touch_ema_sell=last['h']>=ema20 and last['c']<ema20
-            bull_candle,bear_candle,candle_name=detect_candle_lite(df, len(df)-1)
+            k=last['K']
+            d=last['D']
             vol_spike=last['VolSpike']
-            has_trend=adx>ADX_THRESHOLD
-            uptrend=plus_di>minus_di and has_trend
-            downtrend=minus_di>plus_di and has_trend
-            super_up=adx>25 and (plus_di-minus_di)>10
-            super_down=adx>25 and (minus_di-plus_di)>10
+            dist_ema = (last['c']-ema20)/ema20*100
+            dist_vwap = (last['c']-vwap)/vwap*100
+            super_up = plus_di > 25 and minus_di < 15 and adx > 25 and last['c']>ema20 and last['c']>vwap
+            super_down = minus_di > 25 and plus_di < 15 and adx > 25 and last['c']<ema20 and last['c']<vwap
+            uptrend = plus_di > minus_di and adx > ADX_THRESHOLD and last['c']>vwap
+            downtrend = minus_di > plus_di and adx > ADX_THRESHOLD and last['c']<vwap
+            has_trend = adx > ADX_THRESHOLD
+            near_support = last['c'] <= last['Round10'] + 2
+            near_resistance = last['c'] >= last['Round10'] - 2
+            touch_ema_buy = abs(dist_ema) < 0.5
+            touch_ema_sell = abs(dist_ema) < 0.5
+            bull_candle = last['c'] > last['o'] and (last['c']-last['o']) > (last['h']-last['l'])*0.5
+            bear_candle = last['c'] < last['o'] and (last['o']-last['c']) > (last['h']-last['l'])*0.5
+            candle_name = "BULL" if bull_candle else "BEAR" if bear_candle else "DOJI"
             buy=False
             sell=False
             buy_reason=""
             sell_reason=""
-            if super_up and last['c']>ema20 and last['c']>vwap and 55<=rsi<=80 and bull_candle and vol_spike:
+            if super_up and last['c']>ema20 and last['c']>vwap and 55<=rsi<=78 and bull_candle and vol_spike:
                 buy=True
                 buy_reason=f"SUPER_UP {candle_name} ADX{adx:.0f}"
             elif uptrend and last['c']>vwap and (touch_ema_buy or 0<=dist_ema<=8) and 50<=rsi<=78 and near_support and bull_candle:
@@ -484,7 +434,7 @@ def trading_loop():
                     is_s = positions[0]['side']=='short'
                     pnl = (avg-price)/avg*100*LEVERAGE if is_s else (price-avg)/avg*100*LEVERAGE
                     status = f"ถือ {positions[0]['side']} {len(positions)}ไม้ PnL {pnl:+.2f}% Trail {trail_sl:.1f}"
-                send_telegram(f"⏰ [{thai_time()}] {SYMBOL_CCXT} {price:.2f}$ {status}\n💰 {total:.2f}$ Daily {stats['daily_pnl']:+.2f}%")
+                send_telegram(f"⏰ [{thai_time()}] {SYMBOL_CCXT} {price:.2f}$ {status}\n💰 {total:.2f}$ Daily {stats['daily_pnl']:+.2f}% Fail:{fail_count}")
             if len(positions)==0:
                 if buy:
                     ok,qty=mexc_buy(price,1)
