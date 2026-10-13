@@ -1,5 +1,5 @@
 flask
 pandas
-requests
-ccxt
+ccxt>=4.4.90
 pytz
+requests
