@@ -63,17 +63,37 @@ def check_max_hold():
 
 @app.route('/')
 def home():
-    return f"V6 XAUT FINAL Fail:{fail_count} Last:{last_error_detail[:500]}"
+    env_ok = f"BOT:{'OK' if BOT_TOKEN else 'EMPTY'} CHAT:{'OK' if CHAT_ID else 'EMPTY'} MEXC:{'OK' if MEXC_API_KEY else 'EMPTY'}"
+    return f"V6 XAUT FINAL Live OK {env_ok} Fail:{fail_count} Last:{last_error_detail[:500]}<br><a href='/test_tele'>/test_tele to test Telegram</a> | <a href='/stats'>/stats</a>"
 @app.route('/stats')
 def stats_page():
-    return f"<h2>V6 XAUT FINAL</h2>Fail:{fail_count}<br><pre>{last_error_detail}</pre>"
+    env = f"BOT_TOKEN len={len(BOT_TOKEN)} CHAT_ID={CHAT_ID} MEXC_KEY len={len(MEXC_API_KEY)}"
+    return f"<h2>V6 XAUT FINAL</h2>{env}<br>Fail:{fail_count}<br><pre>{last_error_detail}</pre>"
+
+@app.route('/test_tele')
+def test_tele():
+    ok = send_telegram(f"🧪 TEST TELE [{thai_time()}] บอทตอบได้แล้ว\nBOT_TOKEN len {len(BOT_TOKEN)}\nCHAT_ID {CHAT_ID}")
+    return f"Telegram send returned {ok} - check Telegram. If False, BOT_TOKEN or CHAT_ID wrong"
+
+@app.route('/ping')
+def ping():
+    return f"pong {thai_time()} positions={len(positions)}"
+
 
 def send_telegram(msg):
-    if not BOT_TOKEN or not CHAT_ID: return False
+    if not BOT_TOKEN or not CHAT_ID:
+        print(f"[TELE] EMPTY TOKEN or CHAT_ID - BOT len {len(BOT_TOKEN)} CHAT {CHAT_ID}")
+        return False
     try:
-        r = requests.post(f"https://api.telegram.org/bot{BOT_TOKEN}/sendMessage", json={"chat_id": CHAT_ID, "text": msg, "parse_mode":"HTML", "disable_web_page_preview": True}, timeout=15)
+        url = f"https://api.telegram.org/bot{BOT_TOKEN}/sendMessage"
+        r = requests.post(url, json={"chat_id": CHAT_ID, "text": msg, "parse_mode":"HTML", "disable_web_page_preview": True}, timeout=15)
+        print(f"[TELE] send {r.status_code} {r.text[:200]}")
         return r.status_code==200
-    except: return False
+    except Exception as e:
+        print(f"[TELE] exception {e}")
+        import traceback
+        traceback.print_exc()
+        return False
 
 def get_balance():
     if not mexc: return 0,0,0
@@ -85,7 +105,7 @@ def get_balance():
 def format_balance_msg():
     total, free, _ = get_balance()
     wr = (stats["wins"]/stats["total_trades"]*100) if stats["total_trades"]>0 else 0
-    return f"💰 {total:.2f}$ Free {free:.2f}$ | WR {wr:.1f}%", total, wr
+    return f"💰 {total:.2f}$ Free {free:.2f}$ | WR {wr:.1f}%", total
 
 def patch_mexc_markets():
     global last_error_detail
@@ -313,9 +333,23 @@ def should_send_hourly():
 
 def trading_loop():
     global positions,highest,lowest,last_hourly,cooldown_until,last_hourly_report_minute,trail_sl,be_done,last_error_detail
+    print("[LOOP] trading_loop started")
+    # ส่งทันที ไม่รอ patch เพื่อยืนยันว่า thread รัน
+    send_telegram(f"🚀 THREAD STARTED [{thai_time()}] Bot thread alive - testing Telegram")
     time.sleep(3)
-    patch_mexc_markets()
-    bal_msg,total=format_balance_msg()
+    try:
+        patch_mexc_markets()
+    except Exception as e:
+        print(f"patch fail {e}")
+        last_error_detail = f"patch fail {e}"
+        send_telegram(f"⚠️ patch_mexc_markets fail {e}")
+
+    try:
+        bal_msg,total=format_balance_msg()
+    except Exception as e:
+        bal_msg=f"Balance err {e}"
+        total=0.0
+        print(f"format_balance fail {e}")
     last_hourly = time.time()
     last_hourly_report_minute = thai_now().hour
     try:
