@@ -1,11 +1,14 @@
-import requests, pandas as pd, os, time, threading, ccxt, traceback
+
+import requests, pandas as pd, os, time, threading, ccxt, traceback, hmac, hashlib, json, urllib.parse
 from flask import Flask
 from datetime import datetime, timezone
 import pytz
+
 MEXC_API_KEY = os.environ.get("MEXC_API_KEY", "").strip()
 MEXC_API_SECRET = os.environ.get("MEXC_API_SECRET", "").strip()
 BOT_TOKEN = os.environ.get("BOT_TOKEN", "").strip()
 CHAT_ID = os.environ.get("CHAT_ID", "").strip()
+
 SYMBOL = "GOLD_USDT"
 SYMBOL_CCXT = "GOLD/USDT:USDT"
 SYMBOL_FALLBACKS = ["GOLD/USDT:USDT", "GOLD_USDT"]
@@ -22,6 +25,7 @@ TRAIL_START_PCT = 0.4
 TRAIL_PCT = 0.7
 TRAIL_SUPER_PCT = 1.2
 BE_PCT = 0.45
+
 app = Flask(__name__)
 positions, highest, lowest = [], 0, 999999
 stats = {"total_trades":0,"wins":0,"losses":0,"total_pnl_pct":0.0,"daily_pnl":0.0,"last_reset_day":0}
@@ -32,8 +36,10 @@ last_hourly = 0
 last_hourly_report_minute = -1
 fail_count = 0
 last_error_detail = "ยังไม่เคยลอง"
+
 mexc_public = ccxt.mexc({'enableRateLimit': True, 'rateLimit': 1000, 'options': {'defaultType': 'swap'}})
 mexc = ccxt.mexc({'apiKey': MEXC_API_KEY, 'secret': MEXC_API_SECRET, 'enableRateLimit': True, 'rateLimit': 1500, 'options': {'defaultType': 'swap'}}) if MEXC_API_KEY and MEXC_API_SECRET else None
+
 def thai_time():
     return datetime.now(pytz.timezone('Asia/Bangkok')).strftime("%d/%m/%Y %H:%M ICT")
 def thai_now():
@@ -52,21 +58,22 @@ def check_max_hold():
         ft = positions[0].get('time',0)
         return (time.time()-ft)/3600 >= MAX_HOLD_HOURS if ft else False
     except: return False
+
 @app.route('/')
 def home():
-    return f"V6 FINAL PASS Fail:{fail_count} Last:{last_error_detail[:500]}"
+    return f"V6 FINAL V2 Fail:{fail_count} Last:{last_error_detail[:500]}"
 @app.route('/stats')
 def stats_page():
-    return f"<h2>FINAL PASS</h2>Fail:{fail_count}<br><pre>{last_error_detail}</pre>"
+    return f"<h2>FINAL V2</h2>Fail:{fail_count}<br><pre>{last_error_detail}</pre>"
+
 def send_telegram(msg):
     if not BOT_TOKEN or not CHAT_ID: return False
     try:
         r = requests.post(f"https://api.telegram.org/bot{BOT_TOKEN}/sendMessage", json={"chat_id": CHAT_ID, "text": msg, "parse_mode":"HTML", "disable_web_page_preview": True}, timeout=15)
         print(f"TELE {r.status_code}")
         return r.status_code==200
-    except Exception as e:
-        print(f"Telegram err {e}")
-        return False
+    except: return False
+
 def get_balance():
     if not mexc: return 0,0,0
     try:
@@ -77,39 +84,63 @@ def get_balance():
 def format_balance_msg():
     total, free, _ = get_balance()
     return f"💰 {total:.2f}$ Free {free:.2f}$", total, 0
+
 def patch_mexc_markets():
     global last_error_detail
     if not mexc: return False
+    gold_market = {'id': 'GOLD_USDT','symbol': 'GOLD/USDT:USDT','base': 'GOLD','quote': 'USDT','settle': 'USDT','baseId': 'GOLD','quoteId': 'USDT','type': 'swap','spot': False,'swap': True,'future': False,'contract': True,'linear': True,'inverse': False,'active': True,'precision': {'amount': 0.0001, 'price': 0.01},'limits': {'amount': {'min': 0.001, 'max': 1000}, 'price': {'min': 0.01, 'max': 100000}}}
     try:
         mexc.load_markets()
         golds = [k for k in mexc.markets.keys() if 'GOLD' in k]
-        print(f"GOLD: {golds}")
-        last_error_detail = f"GOLD={golds}"
+        print(f"[PATCH] Before inject GOLD: {golds}")
+        # บังคับ inject เสมอ แม้ load สำเร็จ
+        for sym in SYMBOL_FALLBACKS:
+            mexc.markets[sym] = gold_market.copy()
+            mexc.markets[sym]['symbol'] = sym
+        try:
+            mexc.markets_by_id['GOLD_USDT'] = gold_market
+            mexc.symbols = list(mexc.markets.keys())
+        except: pass
+        golds_after = [k for k in mexc.markets.keys() if 'GOLD' in k and 'USDT' in k][:10]
+        last_error_detail = f"GOLD before={golds} after={golds_after}"
+        print(f"[PATCH] After inject {golds_after}")
         return True
     except Exception as e:
+        print(f"load fail {e}")
         last_error_detail = f"load fail {e}"
-    gold_market = {'id': 'GOLD_USDT','symbol': 'GOLD/USDT:USDT','base': 'GOLD','quote': 'USDT','settle': 'USDT','baseId': 'GOLD','quoteId': 'USDT','type': 'swap','spot': False,'swap': True,'future': False,'contract': True,'linear': True,'inverse': False,'active': True,'precision': {'amount': 0.0001, 'price': 0.01},'limits': {'amount': {'min': 0.001, 'max': 1000}, 'price': {'min': 0.01, 'max': 100000}}}
-    for sym in SYMBOL_FALLBACKS:
-        mexc.markets[sym] = gold_market.copy()
-        mexc.markets[sym]['symbol'] = sym
-    try:
-        mexc.markets_by_id['GOLD_USDT'] = gold_market
-        mexc.symbols = list(mexc.markets.keys())
-    except: pass
-    return True
+        try:
+            for sym in SYMBOL_FALLBACKS:
+                mexc.markets[sym] = gold_market.copy()
+                mexc.markets[sym]['symbol'] = sym
+            mexc.markets_by_id['GOLD_USDT'] = gold_market
+            mexc.symbols = list(mexc.markets.keys())
+        except: pass
+        return True
+
 def get_price_mexc():
     for sym in SYMBOL_FALLBACKS:
         try:
             t = mexc_public.fetch_ticker(sym)
-            price = float(t.get('last') or 0)
+            price = float(t.get('last') or t.get('close') or 0)
             if price > 100: return price
-        except: time.sleep(0.3)
+        except Exception as e:
+            print(f"price fail {sym} {e}")
+            time.sleep(0.3)
     try:
         r = requests.get("https://contract.mexc.com/api/v1/contract/ticker", params={"symbol": "GOLD_USDT"}, timeout=10)
-        price = float(r.json().get('data', {}).get('lastPrice') or 0)
+        j = r.json()
+        price = float(j.get('data', {}).get('lastPrice') or j.get('data', {}).get('last') or 0)
         if price > 100: return price
+    except Exception as e:
+        print(f"price REST fail {e}")
+    # fallback to Binance XAUT price as approx
+    try:
+        r = requests.get("https://api.binance.com/api/v3/ticker/price", params={"symbol": "PAXGUSDT"}, timeout=5)
+        paxg = float(r.json().get('price') or 0)
+        if paxg > 100: return paxg
     except: pass
     return None
+
 def get_klines_mexc(limit=200):
     for sym in SYMBOL_FALLBACKS:
         try:
@@ -118,6 +149,7 @@ def get_klines_mexc(limit=200):
             if len(df) >= 50: return df
         except: time.sleep(0.3)
     return None
+
 def calc_lite(df):
     df['hlc3'] = (df['h'] + df['l'] + df['c']) / 3
     df['VWAP'] = df['hlc3'].ewm(span=96).mean()
@@ -143,97 +175,156 @@ def calc_lite(df):
     df['VolSpike'] = df['v'] > df['VolEMA'] * 1.3
     df['Round10'] = (df['c'] / 10).round() * 10
     return df
+
+# ===== DIRECT MEXC RAW ORDER - ไม่ผ่าน CCXT market check =====
+def mexc_raw_order(side, vol=0.01, price=0):
+    global last_error_detail
+    # side: 1=open long, 3=open short
+    try:
+        # ใช้ CCXT sign แต่ยิงเองด้วย requests เพื่อไม่ให้โดน market check
+        params = {
+            'symbol': 'GOLD_USDT',
+            'vol': float(vol),
+            'side': int(side),
+            'type': 5,  # market
+            'openType': 1,
+            'leverage': LEVERAGE,
+        }
+        if price and price > 0:
+            params['price'] = float(price)
+            params['type'] = 1  # limit if price given
+
+        print(f"[RAW] Trying order {params}")
+        # ลองใช้ mexc private method ที่ไม่เช็ค market
+        # วิธีที่เวิร์คสุด: ใช้ mexc's contractPrivatePostOrderSubmit ถ้ามี
+        if hasattr(mexc, 'contract_private_post_order_submit'):
+            order = mexc.contract_private_post_order_submit(params)
+            print(f"[RAW OK] contract_private_post {order}")
+            return True, order
+        
+        # อีกวิธี: ใช้ mexc.request แต่ต้องแน่ใจว่า params ไม่มี None
+        # ลบ None ออก
+        clean_params = {k: v for k, v in params.items() if v is not None}
+        order = mexc.request('order/submit', 'contractPrivate', 'POST', clean_params)
+        print(f"[RAW OK] request {order}")
+        return True, order
+    except Exception as e:
+        err = f"RAW FAIL side {side}: {e}"
+        print(err)
+        traceback.print_exc()
+        last_error_detail = err + "\n" + traceback.format_exc()[:1500]
+        return False, err
+
 def mexc_buy(price,factor):
     global fail_count, cooldown_until, last_error_detail
     if not mexc: return True, 0.01
     qty_gold = 0.01
     all_errors = []
+
+    # METHOD 1: CCXT - แต่ตอนนี้ patch แล้ว ต้องมี market
     for sym in SYMBOL_FALLBACKS:
         try:
-            print(f"[BUY TRY1] {sym}")
-            try: mexc.set_leverage(LEVERAGE, sym)
-            except: pass
+            print(f"[BUY TRY1] {sym} {qty_gold}")
+            # เช็คว่ามี market จริง
+            if sym not in mexc.markets:
+                raise Exception(f"market {sym} not in mexc.markets after patch")
+            try: 
+                mexc.set_leverage(LEVERAGE, sym)
+            except Exception as le:
+                print(f"set lev fail {le}")
             order = mexc.create_market_buy_order(sym, qty_gold)
+            print(f"[BUY OK1] {order}")
             fail_count = 0
-            last_error_detail = f"OK {sym} {order}"
+            last_error_detail = f"OK1 {sym} {order}"
             return True, qty_gold
         except Exception as e:
             err = f"TRY1 {sym}: {str(e)[:300]}"
             all_errors.append(err)
             last_error_detail = err + "\n" + traceback.format_exc()[:800]
             print(err)
+
+    # METHOD 2: RAW - ไม่ผ่าน market check
+    ok, res = mexc_raw_order(side=1, vol=qty_gold, price=0)
+    if ok:
+        fail_count = 0
+        last_error_detail = f"OK RAW {res}"
+        return True, qty_gold
+    else:
+        all_errors.append(f"TRY2 RAW: {res}")
+
+    # METHOD 3: RAW with price
+    ok, res = mexc_raw_order(side=1, vol=qty_gold, price=price)
+    if ok:
+        fail_count = 0
+        last_error_detail = f"OK RAW price {res}"
+        return True, qty_gold
+    else:
+        all_errors.append(f"TRY3 RAW price {price}: {res}")
+
+    # METHOD 4: Try set position mode then retry
     try:
-        print("[BUY TRY2] contractPrivate")
-        try:
-            mexc.request('position/mode', 'contractPrivate', 'POST', {'positionMode': 1})
-        except Exception as e:
-            print(f"mode fail {e}")
+        print("[BUY TRY4] set position mode")
+        for mode in [1,2]:
             try:
-                mexc.request('position/mode', 'contractPrivate', 'POST', {'positionMode': 2})
-            except: pass
-        params = {'symbol': 'GOLD_USDT','vol': qty_gold,'side': 1,'type': 5,'openType': 1,'leverage': LEVERAGE,'price': 0}
-        order = mexc.request('order/submit', 'contractPrivate', 'POST', params)
-        fail_count = 0
-        last_error_detail = f"OK2 {order}"
-        return True, qty_gold
+                mexc.request('position/mode', 'contractPrivate', 'POST', {'positionMode': mode})
+                print(f"set mode {mode} OK")
+                ok, res = mexc_raw_order(side=1, vol=qty_gold, price=0)
+                if ok:
+                    fail_count = 0
+                    last_error_detail = f"OK after mode {mode} {res}"
+                    return True, qty_gold
+            except Exception as me:
+                print(f"mode {mode} fail {me}")
     except Exception as e:
-        err = f"TRY2: {str(e)[:400]}"
-        all_errors.append(err)
-        last_error_detail = err + "\n" + traceback.format_exc()[:1000]
-        print(err)
-        traceback.print_exc()
-    try:
-        print(f"[BUY TRY3] price {price}")
-        params = {'symbol': 'GOLD_USDT','vol': qty_gold,'side': 1,'type': 5,'openType': 1,'leverage': LEVERAGE,'price': price}
-        order = mexc.request('order/submit', 'contractPrivate', 'POST', params)
-        fail_count = 0
-        last_error_detail = f"OK3 {order}"
-        return True, qty_gold
-    except Exception as e:
-        err = f"TRY3: {str(e)[:400]}"
-        all_errors.append(err)
-        last_error_detail = err
-        print(err)
+        all_errors.append(f"TRY4 mode: {e}")
+
     fail_count += 1
     cooldown_until = time.time() + FAIL_COOLDOWN_MIN*60
     combined = "\n".join(all_errors)
     last_error_detail = combined[:3000]
-    send_telegram(f"⚠️ BUY FAIL {fail_count}ครั้ง\n💰 {get_balance()[0]:.2f}$\n{combined[:2000]}")
+    send_telegram(f"⚠️ BUY FAIL V2 {fail_count}ครั้ง\n💰 {get_balance()[0]:.2f}$\n{combined[:2000]}")
     return False, 0
+
 def mexc_sell(price,factor):
     global fail_count, cooldown_until, last_error_detail
     if not mexc: return True, 0.01
     qty_gold = 0.01
     for sym in SYMBOL_FALLBACKS:
         try:
+            if sym not in mexc.markets: continue
             try: mexc.set_leverage(LEVERAGE, sym)
             except: pass
             order = mexc.create_market_sell_order(sym, qty_gold)
             fail_count = 0
             return True, qty_gold
         except: time.sleep(0.3)
-    try:
-        params = {'symbol': 'GOLD_USDT','vol': qty_gold,'side': 3,'type': 5,'openType': 1,'leverage': LEVERAGE,'price': 0}
-        order = mexc.request('order/submit', 'contractPrivate', 'POST', params)
+    ok, res = mexc_raw_order(side=3, vol=qty_gold, price=0)
+    if ok:
         fail_count = 0
         return True, qty_gold
-    except Exception as e:
-        last_error_detail = f"SELL FAIL {e}"
     fail_count += 1
     cooldown_until = time.time() + FAIL_COOLDOWN_MIN*60
     return False, 0
+
 def mexc_close_all():
     if not mexc: return True
     for sym in SYMBOL_FALLBACKS:
         try:
-            mexc.create_order(sym, 'market', 'sell', 0, None, {'reduceOnly': True, 'closePosition': True})
-            return True
+            if sym in mexc.markets:
+                mexc.create_order(sym, 'market', 'sell', 0, None, {'reduceOnly': True, 'closePosition': True})
+                return True
         except:
             try:
                 mexc.create_order(sym, 'market', 'buy', 0, None, {'reduceOnly': True, 'closePosition': True})
                 return True
             except: continue
+    # raw close
+    try:
+        mexc.request('order/submit', 'contractPrivate', 'POST', {'symbol': 'GOLD_USDT','vol': 0.01,'side': 2,'type': 5,'openType': 1})
+        mexc.request('order/submit', 'contractPrivate', 'POST', {'symbol': 'GOLD_USDT','vol': 0.01,'side': 4,'type': 5,'openType': 1})
+    except: pass
     return True
+
 def close_position(price,typ):
     global positions,stats,trail_sl,be_done,cooldown_until
     if not positions: return
@@ -257,10 +348,12 @@ def close_position(price,typ):
     positions.clear()
     global highest, lowest
     highest=0; lowest=999999; trail_sl=0; be_done=False
+
 def should_send_hourly():
     global last_hourly, last_hourly_report_minute
     now = thai_now()
     return (time.time() - last_hourly) >= 3600 or (now.minute == 0 and now.second < 20 and last_hourly_report_minute != now.hour)
+
 def trading_loop():
     global positions,highest,lowest,last_hourly,cooldown_until,last_hourly_report_minute,trail_sl,be_done,last_error_detail
     time.sleep(3)
@@ -269,10 +362,10 @@ def trading_loop():
     last_hourly = time.time()
     last_hourly_report_minute = thai_now().hour
     try:
-        golds = [k for k in mexc.markets.keys() if 'GOLD' in k] if mexc and mexc.markets else []
-        send_telegram(f"🚀 V6 FINAL PASS LIVE {SYMBOL_CCXT} 0.01 GOLD 5X\n{bal_msg}\nGOLD: {golds}\n✅ FINAL PASS force BUY")
+        golds = [k for k in mexc.markets.keys() if 'GOLD' in k and 'USDT' in k][:10] if mexc and mexc.markets else []
+        send_telegram(f"🚀 V6 FINAL V2 LIVE {SYMBOL_CCXT} 0.01 GOLD 5X\n{bal_msg}\nGOLD: {golds}\n✅ FINAL V2 force inject + RAW")
     except Exception as e:
-        send_telegram(f"🚀 V6 FINAL PASS LIVE {bal_msg}\nErr: {e}")
+        send_telegram(f"🚀 V6 FINAL V2 LIVE {bal_msg}\nErr: {e}")
     time.sleep(2)
     price_test = get_price_mexc()
     if not price_test:
@@ -288,7 +381,7 @@ def trading_loop():
         positions.clear()
         send_telegram(f"✅ ปิด TEST แล้ว พร้อมเทรด")
     else:
-        send_telegram(f"❌ TEST BUY ล้มเหลว\n{last_error_detail[:1500]}\nดู /stats")
+        send_telegram(f"❌ TEST BUY ล้มเหลว\n{last_error_detail[:1500]}")
     while True:
         try:
             if time.time() < cooldown_until: time.sleep(15); continue
