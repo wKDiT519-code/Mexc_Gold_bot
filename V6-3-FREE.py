@@ -9,10 +9,10 @@ MEXC_API_SECRET = os.environ.get("MEXC_API_SECRET", "").strip()
 BOT_TOKEN = os.environ.get("BOT_TOKEN", "").strip()
 CHAT_ID = os.environ.get("CHAT_ID", "").strip()
 
-# ===== NEW SYMBOL - MEXC เปลี่ยนจาก GOLD_USDT เป็น GOLD(XAUT)_USDT =====
-SYMBOL = "GOLD(XAUT)_USDT"  # ID จริงบน MEXC contract API
-SYMBOL_CCXT = "GOLD(XAUT)/USDT:USDT"  # CCXT symbol
-SYMBOL_FALLBACKS = ["GOLD(XAUT)/USDT:USDT", "GOLD(XAUT)_USDT", "XAUT/USDT:USDT", "GOLD_USDT", "GOLD/USDT:USDT"]
+# ===== V7 XAU FINAL - สัญญาทองหลักของ MEXC ตอนนี้ =====
+SYMBOL = "XAU_USDT"
+SYMBOL_CCXT = "XAU/USDT:USDT"
+SYMBOL_FALLBACKS = ["XAU/USDT:USDT", "XAU_USDT"]
 
 LEVERAGE = 5
 TP_PCT = 2.5
@@ -64,34 +64,30 @@ def check_max_hold():
 @app.route('/')
 def home():
     env_ok = f"BOT:{'OK' if BOT_TOKEN else 'EMPTY'} CHAT:{'OK' if CHAT_ID else 'EMPTY'} MEXC:{'OK' if MEXC_API_KEY else 'EMPTY'}"
-    return f"V6 XAUT FINAL Live OK {env_ok} Fail:{fail_count} Last:{last_error_detail[:500]}<br><a href='/test_tele'>/test_tele to test Telegram</a> | <a href='/stats'>/stats</a>"
+    return f"V7 XAU FINAL Live OK {env_ok} Fail:{fail_count} Last:{last_error_detail[:500]}<br><a href='/test_tele'>/test_tele</a> | <a href='/stats'>/stats</a>"
 @app.route('/stats')
 def stats_page():
     env = f"BOT_TOKEN len={len(BOT_TOKEN)} CHAT_ID={CHAT_ID} MEXC_KEY len={len(MEXC_API_KEY)}"
-    return f"<h2>V6 XAUT FINAL</h2>{env}<br>Fail:{fail_count}<br><pre>{last_error_detail}</pre>"
-
+    return f"<h2>V7 XAU FINAL</h2>{env}<br>Fail:{fail_count}<br><pre>{last_error_detail}</pre>"
 @app.route('/test_tele')
 def test_tele():
-    ok = send_telegram(f"🧪 TEST TELE [{thai_time()}] บอทตอบได้แล้ว\nBOT_TOKEN len {len(BOT_TOKEN)}\nCHAT_ID {CHAT_ID}")
-    return f"Telegram send returned {ok} - check Telegram. If False, BOT_TOKEN or CHAT_ID wrong"
-
+    ok = send_telegram(f"🧪 TEST TELE [{thai_time()}] XAU bot ตอบได้แล้ว")
+    return f"Telegram send returned {ok}"
 @app.route('/ping')
 def ping():
     return f"pong {thai_time()} positions={len(positions)}"
 
-
 def send_telegram(msg):
     if not BOT_TOKEN or not CHAT_ID:
-        print(f"[TELE] EMPTY TOKEN or CHAT_ID - BOT len {len(BOT_TOKEN)} CHAT {CHAT_ID}")
+        print(f"[TELE] EMPTY BOT {len(BOT_TOKEN)} CHAT {CHAT_ID}")
         return False
     try:
         url = f"https://api.telegram.org/bot{BOT_TOKEN}/sendMessage"
         r = requests.post(url, json={"chat_id": CHAT_ID, "text": msg, "parse_mode":"HTML", "disable_web_page_preview": True}, timeout=15)
-        print(f"[TELE] send {r.status_code} {r.text[:200]}")
+        print(f"[TELE] {r.status_code} {r.text[:200]}")
         return r.status_code==200
     except Exception as e:
-        print(f"[TELE] exception {e}")
-        import traceback
+        print(f"[TELE] ex {e}")
         traceback.print_exc()
         return False
 
@@ -107,54 +103,19 @@ def format_balance_msg():
     wr = (stats["wins"]/stats["total_trades"]*100) if stats["total_trades"]>0 else 0
     return f"💰 {total:.2f}$ Free {free:.2f}$ | WR {wr:.1f}%", total
 
-def patch_mexc_markets():
-    global last_error_detail
-    if not mexc: return False
-    gold_market = {'id': 'GOLD(XAUT)_USDT','symbol': 'GOLD(XAUT)/USDT:USDT','base': 'GOLD(XAUT)','quote': 'USDT','settle': 'USDT','baseId': 'GOLD(XAUT)','quoteId': 'USDT','type': 'swap','spot': False,'swap': True,'future': False,'contract': True,'linear': True,'inverse': False,'active': True,'precision': {'amount': 0.0001, 'price': 0.01},'limits': {'amount': {'min': 0.001, 'max': 1000}, 'price': {'min': 0.01, 'max': 100000}}}
-    try:
-        mexc.load_markets()
-        golds = [k for k in mexc.markets.keys() if 'GOLD' in k or 'XAUT' in k][:15]
-        print(f"Before inject GOLD: {golds}")
-        # inject new symbol
-        for sym in SYMBOL_FALLBACKS:
-            if sym not in mexc.markets:
-                mexc.markets[sym] = gold_market.copy()
-                mexc.markets[sym]['symbol'] = sym
-        try:
-            mexc.markets_by_id['GOLD(XAUT)_USDT'] = gold_market
-            mexc.markets_by_id['GOLD_XAUT_USDT'] = gold_market
-            mexc.symbols = list(mexc.markets.keys())
-        except: pass
-        golds_after = [k for k in mexc.markets.keys() if 'XAUT' in k or ('GOLD' in k and 'USDT' in k)][:15]
-        last_error_detail = f"GOLD before={golds} after={golds_after}"
-        print(f"After inject {golds_after}")
-        return True
-    except Exception as e:
-        print(f"load fail {e}")
-        last_error_detail = f"load fail {e}"
-        for sym in SYMBOL_FALLBACKS:
-            mexc.markets[sym] = gold_market.copy()
-            mexc.markets[sym]['symbol'] = sym
-        return True
-
 def get_price_mexc():
-    # ลอง XAUT ก่อน
-    for sym in ["GOLD(XAUT)/USDT:USDT", "GOLD(XAUT)_USDT", "XAUT/USDT:USDT", "GOLD/USDT:USDT", "GOLD_USDT"]:
+    for sym in ["XAU/USDT:USDT", "XAU_USDT", "XAU/USDT"]:
         try:
             t = mexc_public.fetch_ticker(sym)
             price = float(t.get('last') or t.get('close') or 0)
-            if price > 100: 
+            if price > 100:
                 print(f"price {sym} {price}")
                 return price
-        except: time.sleep(0.3)
+        except Exception as e:
+            print(f"price fail {sym} {e}")
+            time.sleep(0.3)
     try:
-        r = requests.get("https://contract.mexc.com/api/v1/contract/ticker", params={"symbol": "GOLD(XAUT)_USDT"}, timeout=10)
-        j = r.json()
-        price = float(j.get('data', {}).get('lastPrice') or j.get('data', {}).get('last') or 0)
-        if price > 100: return price
-    except: pass
-    try:
-        r = requests.get("https://contract.mexc.com/api/v1/contract/ticker", params={"symbol": "GOLD_USDT"}, timeout=10)
+        r = requests.get("https://contract.mexc.com/api/v1/contract/ticker", params={"symbol": "XAU_USDT"}, timeout=10)
         j = r.json()
         price = float(j.get('data', {}).get('lastPrice') or 0)
         if price > 100: return price
@@ -162,7 +123,7 @@ def get_price_mexc():
     return None
 
 def get_klines_mexc(limit=200):
-    for sym in ["GOLD(XAUT)/USDT:USDT", "GOLD(XAUT)_USDT", "XAUT/USDT:USDT"]:
+    for sym in ["XAU/USDT:USDT", "XAU_USDT"]:
         try:
             ohlcv = mexc_public.fetch_ohlcv(sym, timeframe='15m', limit=limit)
             df = pd.DataFrame(ohlcv, columns=['ot','o','h','l','c','v'])
@@ -196,110 +157,60 @@ def calc_lite(df):
     df['Round10'] = (df['c'] / 10).round() * 10
     return df
 
-def mexc_raw_order(side, vol=0.01, price=0):
-    global last_error_detail
-    try:
-        params = {
-            'symbol': 'GOLD(XAUT)_USDT',
-            'vol': float(vol),
-            'side': int(side),
-            'type': 5,
-            'openType': 1,
-            'leverage': LEVERAGE,
-        }
-        if price and price > 0:
-            params['price'] = float(price)
-            params['type'] = 1
-        print(f"[RAW] {params}")
-        clean_params = {k: v for k, v in params.items() if v is not None}
-        order = mexc.request('order/submit', 'contractPrivate', 'POST', clean_params)
-        print(f"[RAW OK] {order}")
-        return True, order
-    except Exception as e:
-        err = f"RAW FAIL side {side}: {e}"
-        print(err)
-        traceback.print_exc()
-        last_error_detail = err + "\n" + traceback.format_exc()[:1500]
-        return False, err
-
 def mexc_buy(price,factor):
     global fail_count, cooldown_until, last_error_detail
-    if not mexc: return True, 0.01
-    qty_gold = 0.01
+    if not mexc: return True, 1
+    qty = 1  # 1 cont for XAU
     all_errors = []
-    for sym in ["GOLD(XAUT)/USDT:USDT", "GOLD(XAUT)_USDT", "XAUT/USDT:USDT"]:
+    for sym in ["XAU/USDT:USDT", "XAU_USDT"]:
         try:
-            print(f"[BUY TRY] {sym}")
-            if sym not in mexc.markets:
-                raise Exception(f"market {sym} not in mexc.markets")
+            print(f"[BUY TRY] {sym} qty {qty}")
             try: mexc.set_leverage(LEVERAGE, sym)
             except: pass
-            order = mexc.create_market_buy_order(sym, qty_gold)
+            order = mexc.create_market_buy_order(sym, qty)
             fail_count = 0
             last_error_detail = f"OK {sym} {order}"
-            return True, qty_gold
+            return True, qty
         except Exception as e:
-            err = f"TRY {sym}: {str(e)[:300]}"
+            err = f"TRY {sym}: {str(e)[:400]}"
             all_errors.append(err)
             last_error_detail = err + "\n" + traceback.format_exc()[:800]
             print(err)
-    ok, res = mexc_raw_order(side=1, vol=qty_gold, price=0)
-    if ok:
-        fail_count = 0
-        last_error_detail = f"OK RAW {res}"
-        return True, qty_gold
-    else:
-        all_errors.append(f"RAW: {res}")
-    ok, res = mexc_raw_order(side=1, vol=qty_gold, price=price)
-    if ok:
-        fail_count = 0
-        return True, qty_gold
-    else:
-        all_errors.append(f"RAW price {price}: {res}")
+            time.sleep(0.5)
     fail_count += 1
     cooldown_until = time.time() + FAIL_COOLDOWN_MIN*60
     combined = "\n".join(all_errors)
     last_error_detail = combined[:3000]
-    send_telegram(f"⚠️ BUY FAIL XAUT {fail_count}ครั้ง\n💰 {get_balance()[0]:.2f}$\n{combined[:2000]}")
+    send_telegram(f"⚠️ BUY FAIL XAU {fail_count}ครั้ง\n💰 {get_balance()[0]:.2f}$\n{combined[:2000]}")
     return False, 0
 
 def mexc_sell(price,factor):
     global fail_count, cooldown_until
-    if not mexc: return True, 0.01
-    qty_gold = 0.01
-    for sym in ["GOLD(XAUT)/USDT:USDT", "GOLD(XAUT)_USDT"]:
+    if not mexc: return True, 1
+    qty = 1
+    for sym in ["XAU/USDT:USDT", "XAU_USDT"]:
         try:
-            if sym not in mexc.markets: continue
             try: mexc.set_leverage(LEVERAGE, sym)
             except: pass
-            order = mexc.create_market_sell_order(sym, qty_gold)
+            order = mexc.create_market_sell_order(sym, qty)
             fail_count = 0
-            return True, qty_gold
-        except: time.sleep(0.3)
-    ok, res = mexc_raw_order(side=3, vol=qty_gold, price=0)
-    if ok:
-        fail_count = 0
-        return True, qty_gold
+            return True, qty
+        except: time.sleep(0.5)
     fail_count += 1
     cooldown_until = time.time() + FAIL_COOLDOWN_MIN*60
     return False, 0
 
 def mexc_close_all():
     if not mexc: return True
-    for sym in ["GOLD(XAUT)/USDT:USDT", "GOLD(XAUT)_USDT"]:
+    for sym in ["XAU/USDT:USDT", "XAU_USDT"]:
         try:
-            if sym in mexc.markets:
-                mexc.create_order(sym, 'market', 'sell', 0, None, {'reduceOnly': True, 'closePosition': True})
-                return True
+            mexc.create_order(sym, 'market', 'sell', 0, None, {'reduceOnly': True, 'closePosition': True})
+            return True
         except:
             try:
                 mexc.create_order(sym, 'market', 'buy', 0, None, {'reduceOnly': True, 'closePosition': True})
                 return True
             except: continue
-    try:
-        mexc.request('order/submit', 'contractPrivate', 'POST', {'symbol': 'GOLD(XAUT)_USDT','vol': 0.01,'side': 2,'type': 5,'openType': 1})
-        mexc.request('order/submit', 'contractPrivate', 'POST', {'symbol': 'GOLD(XAUT)_USDT','vol': 0.01,'side': 4,'type': 5,'openType': 1})
-    except: pass
     return True
 
 def close_position(price,typ):
@@ -334,45 +245,42 @@ def should_send_hourly():
 def trading_loop():
     global positions,highest,lowest,last_hourly,cooldown_until,last_hourly_report_minute,trail_sl,be_done,last_error_detail
     print("[LOOP] trading_loop started")
-    # ส่งทันที ไม่รอ patch เพื่อยืนยันว่า thread รัน
     send_telegram(f"🚀 THREAD STARTED [{thai_time()}] Bot thread alive - testing Telegram")
-    time.sleep(3)
+    time.sleep(2)
     try:
-        patch_mexc_markets()
+        mexc.load_markets()
+        xau = [k for k in mexc.markets.keys() if 'XAU' in k][:10]
+        print(f"XAU markets: {xau}")
+        last_error_detail = f"XAU markets: {xau}"
     except Exception as e:
-        print(f"patch fail {e}")
-        last_error_detail = f"patch fail {e}"
-        send_telegram(f"⚠️ patch_mexc_markets fail {e}")
-
+        print(f"load fail {e}")
+        last_error_detail = f"load fail {e}"
     try:
-        bal_msg,total=format_balance_msg()
+        bal_msg,total = format_balance_msg()
     except Exception as e:
         bal_msg=f"Balance err {e}"
         total=0.0
-        print(f"format_balance fail {e}")
     last_hourly = time.time()
     last_hourly_report_minute = thai_now().hour
     try:
-        golds = [k for k in mexc.markets.keys() if 'XAUT' in k or ('GOLD' in k and 'USDT' in k)][:12] if mexc and mexc.markets else []
-        send_telegram(f"🚀 V6 XAUT FINAL LIVE {SYMBOL_CCXT} 0.01 GOLD 5X\n{bal_msg}\nGOLD: {golds}\n✅ ใช้ GOLD(XAUT)_USDT แทน GOLD_USDT ที่โดนลบ")
-    except Exception as e:
-        send_telegram(f"🚀 V6 XAUT FINAL LIVE {bal_msg}\nErr: {e}")
+        send_telegram(f"🚀 V7 XAU FINAL LIVE {SYMBOL_CCXT} 1 cont 5X\n{bal_msg}\nXAU markets: {xau if 'xau' in locals() else 'unknown'}\n✅ ใช้ XAU_USDT ตัวหลัก Micro-fractions")
+    except: pass
     time.sleep(2)
     price_test = get_price_mexc()
     if not price_test:
-        price_test = 4200.0
-        send_telegram(f"⚠️ ดึงราคาไม่ได้ ใช้ {price_test}$ ทดสอบ BUY XAUT")
+        price_test = 4150.0
+        send_telegram(f"⚠️ ดึงราคาไม่ได้ ใช้ {price_test}$ ทดสอบ BUY XAU")
     else:
-        send_telegram(f"🧪 ทดสอบ BUY XAUT {price_test:.2f}$...")
+        send_telegram(f"🧪 ทดสอบ BUY XAU {price_test:.2f}$...")
     ok,qty = mexc_buy(price_test,1)
     if ok:
-        send_telegram(f"✅ TEST BUY XAUT สำเร็จ! {price_test:.2f}$")
+        send_telegram(f"✅ TEST BUY XAU สำเร็จ! {price_test:.2f}$ qty {qty}")
         time.sleep(2)
         mexc_close_all()
         positions.clear()
-        send_telegram(f"✅ ปิด TEST XAUT แล้ว พร้อมเทรด")
+        send_telegram(f"✅ ปิด TEST XAU แล้ว พร้อมเทรด")
     else:
-        send_telegram(f"❌ TEST BUY XAUT ล้มเหลว\n{last_error_detail[:1500]}")
+        send_telegram(f"❌ TEST BUY XAU ล้มเหลว\n{last_error_detail[:1500]}")
     while True:
         try:
             if time.time() < cooldown_until: time.sleep(15); continue
@@ -419,14 +327,14 @@ def trading_loop():
                         positions.append({'entry':price,'qty':qty,'side':'long','time':time.time()})
                         highest=price; lowest=999999; trail_sl=price*(1-SL_PCT/100); be_done=False
                         bal_msg,_=format_balance_msg()
-                        send_telegram(f"🟢 LONG XAUT {price:.2f}$ {buy_reason}\nSL {trail_sl:.2f}\n{bal_msg}")
+                        send_telegram(f"🟢 LONG XAU {price:.2f}$ {buy_reason}\nSL {trail_sl:.2f}\n{bal_msg}")
                 elif sell:
                     ok,qty=mexc_sell(price,1)
                     if ok:
                         positions.append({'entry':price,'qty':-qty,'side':'short','time':time.time()})
                         lowest=price; highest=0; trail_sl=price*(1+SL_PCT/100); be_done=False
                         bal_msg,_=format_balance_msg()
-                        send_telegram(f"🔴 SHORT XAUT {price:.2f}$ {sell_reason}\nSL {trail_sl:.2f}\n{bal_msg}")
+                        send_telegram(f"🔴 SHORT XAU {price:.2f}$ {sell_reason}\nSL {trail_sl:.2f}\n{bal_msg}")
             if positions:
                 avg=positions[0]['entry']
                 is_short = positions[0]['side']=='short'
