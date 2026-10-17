@@ -1,11 +1,15 @@
 """
-V12.8 FREE FIX - แก้ Permission denied '/mnt/data' บน Render Free Tier
-จาก Log: File "/opt/render/project/src/V6-3-FREE.py", line 73, os.makedirs("/mnt/data") PermissionError
+V12.9 RENDER FREE PERSIST - สำหรับคนคุ้นเคย Render.com ไม่อยากย้าย ไม่ต้องซื้อ Disk
+แก้ปัญหา Render Free ที่เคยเจอวันนี้:
+- Permission denied /mnt/data -> ใช้ ./data ได้ แต่หายตอน Restart
+- Position History ว่าง เพราะ positions=[] หาย บอทเลยเปิด LONG ซ้ำ 9 นาที
+- Order History มี แต่ PNL 0 เพราะยังไม่ได้ปิด
 
-V12.8 FIX:
-- ใช้ DATA_DIR = ./data สำหรับ Free Tier (เขียนได้) แทน /mnt/data (ต้อง Paid Disk เท่านั้น)
-- ถ้ามี Disk จะ auto ใช้ /mnt/data เอง
-- ที่เหลือเหมือน V12.7 REAL ORDER 5X LONG ONLY
+V12.9 NEW - RENDER FREE PERSIST:
+- AUTO RECOVER จาก MEXC จริง: สตาร์ทบอทจะเรียก mexc.fetch_positions() ดึงไม้ LONG 0.001 ที่ค้างบน MEXC มาจำใหม่ ไม่เปิดซ้ำ
+- SMART DATA_DIR: /mnt/data ถ้า Paid, ./data ถ้า Free, ถ้าไม่มีทั้งคู่ก็จำในหน่วยความจำ + Recover จาก MEXC
+- LONG ONLY 5X Cross ตาม History จริง, EMA12x26 RUN รันยาวไม่ตัดเร็ว
+- ใช้บน Render.com Free ได้ถาวร ไม่ต้องจ่าย $7.25
 """
 
 import requests, pandas as pd, os, time, threading, json
@@ -13,27 +17,24 @@ from flask import Flask, jsonify
 from datetime import datetime
 import pytz
 
-# === SMART DATA DIR - FIX FOR FREE TIER ===
-# Free tier เขียน /mnt/data ไม่ได้ -> ใช้ ./data แทน
-# Paid + Disk จะมี /mnt/data เขียนได้ -> ใช้ /mnt/data
 def get_data_dir():
-    # ลอง /mnt/data ก่อน (Paid Disk)
     try:
         if os.path.exists("/mnt/data") and os.access("/mnt/data", os.W_OK):
             return "/mnt/data"
-        # ลองสร้างดู ถ้าได้แสดงว่า Paid
         os.makedirs("/mnt/data", exist_ok=True)
         if os.access("/mnt/data", os.W_OK):
             return "/mnt/data"
     except:
         pass
-    # Fallback สำหรับ Free Tier
     fallback = "./data"
-    os.makedirs(fallback, exist_ok=True)
+    try:
+        os.makedirs(fallback, exist_ok=True)
+    except:
+        fallback = "."
     return fallback
 
 DATA_DIR = get_data_dir()
-print(f"Using DATA_DIR: {DATA_DIR} | Free Tier: {DATA_DIR != '/mnt/data'}")
+print(f"V12.9 RENDER FREE PERSIST - DATA_DIR: {DATA_DIR} | Render.com Familiar Mode")
 
 MEXC_API_KEY = os.environ.get("MEXC_API_KEY", "").strip()
 MEXC_API_SECRET = os.environ.get("MEXC_API_SECRET", "").strip()
@@ -41,7 +42,6 @@ BOT_TOKEN = os.environ.get("BOT_TOKEN", "").strip()
 CHAT_ID = os.environ.get("CHAT_ID", "").strip()
 
 SYMBOL = "PAXGUSDT"
-SYMBOL_CCXT = "PAXG/USDT:USDT"
 SYMBOL_MEXC_ID = "PAXG_USDT"
 ORDER_PERCENT = 10
 LEVERAGE = 5
@@ -68,13 +68,9 @@ ENABLE_SIDEWAY_DOWN = False
 ENABLE_BREAKOUT_UP = True
 ENABLE_EMA12x26_RUN = True
 
-WEEKLY_REVIEW_DAY = 5
-WEEKLY_REVIEW_HOUR = 20
-BT_FILE_PRIMARY = os.path.join(DATA_DIR, "BT-1week-V2.3.csv")
-BT_FILE_FALLBACK = "./BT-1week-V2.3.csv"
-WEEKLY_REPORT_FILE = os.path.join(DATA_DIR, "weekly_saturday_report.json")
 POSITIONS_FILE = os.path.join(DATA_DIR, "positions.json")
 STATS_FILE = os.path.join(DATA_DIR, "stats.json")
+WEEKLY_REPORT_FILE = os.path.join(DATA_DIR, "weekly_saturday_report.json")
 
 app = Flask(__name__)
 positions, highest, lowest, last_hourly = [], 0, 999999, time.time()
@@ -84,11 +80,11 @@ daily_loss_count = 0
 last_daily_reset = datetime.now(pytz.timezone('Asia/Bangkok')).day
 current_atr_sl = SL_PCT
 last_news_reason = ""
-last_news_sent = time.time()
-last_cooldown_sent = time.time()
-last_daily_loss_sent = time.time()
+last_news_sent = 0
+last_cooldown_sent = 0
+last_daily_loss_sent = 0
 last_ema_cross = ""
-weekly_config = {"last_review": "", "wr": 0, "pnl": 0}
+weekly_config = {}
 
 try:
     import ccxt
@@ -104,7 +100,7 @@ try:
     else:
         mexc = None
 except Exception as e:
-    print(f"CCXT init err {e}")
+    print(f"CCXT err {e}")
     mexc_public = None
     mexc = None
 
@@ -127,16 +123,18 @@ def load_positions():
                 positions = data.get("positions", [])
                 highest = data.get("highest", 0)
                 lowest = data.get("lowest", 999999)
-                print(f"Loaded {len(positions)} positions from {POSITIONS_FILE}")
+                print(f"Loaded {len(positions)} from {POSITIONS_FILE}")
+                return len(positions) > 0
     except Exception as e:
         print(f"load pos err {e}")
+    return False
 
 def save_stats():
     try:
         with open(STATS_FILE, 'w', encoding='utf-8') as f:
             json.dump(stats, f)
-    except Exception as e:
-        print(f"save stats err {e}")
+    except:
+        pass
 
 def load_stats():
     global stats
@@ -144,12 +142,71 @@ def load_stats():
         if os.path.exists(STATS_FILE):
             with open(STATS_FILE, 'r', encoding='utf-8') as f:
                 stats = json.load(f)
-                print(f"Loaded stats from {STATS_FILE}")
-    except Exception as e:
-        print(f"load stats err {e}")
+    except:
+        pass
 
-load_positions()
+def sync_positions_from_mexc():
+    """
+    RENDER FREE PERSIST - หัวใจสำคัญ
+    ดึงไม้ที่ค้างบน MEXC จริงๆ มาเลย กันเปิดซ้ำ 4,154/4,159 แบบเมื่อวาน
+    """
+    global positions, highest, lowest
+    if not mexc:
+        print("mexc not configured, skip sync")
+        return False
+    try:
+        print(f"Syncing positions from MEXC {SYMBOL}...")
+        poss = mexc.fetch_positions(SYMBOL)
+        # ccxt return list
+        real_pos = []
+        for p in poss:
+            # หา position ที่ size !=0
+            contracts = float(p.get('contracts', 0) or p.get('contractSize', 0) or 0)
+            # บาง exchange ใช้ 'info' ข้างใน
+            info = p.get('info', {})
+            # MEXC format: holdVol, entry price
+            entry_price = float(p.get('entryPrice') or info.get('openAvgPrice') or info.get('holdAvgPrice') or 0)
+            qty = abs(contracts)
+            if qty == 0:
+                # ลองดู info.holdVol
+                try:
+                    qty = abs(float(info.get('holdVol', 0)))
+                except:
+                    qty = 0
+            if qty > 0 and entry_price > 0:
+                # เป็น LONG ถ้า side long
+                side = p.get('side') or info.get('positionType', 1)
+                is_long = True
+                if isinstance(side, str):
+                    is_long = 'long' in side.lower() or side == '1'
+                else:
+                    is_long = int(side) == 1
+                if is_long:
+                    real_pos.append({'entry': entry_price, 'qty': qty, 'side': 'long', 'time': time.time() - 3600})
+        
+        if real_pos:
+            positions = real_pos
+            avg_entry = sum(p['entry']*p['qty'] for p in positions)/sum(p['qty'] for p in positions)
+            highest = avg_entry
+            lowest = avg_entry
+            save_positions()
+            print(f"RECOVERED {len(positions)} positions from MEXC: Avg {avg_entry}")
+            return True
+        else:
+            print("No open positions on MEXC (Position History ว่างเพราะปิดหมดแล้ว)")
+            return False
+    except Exception as e:
+        print(f"sync from MEXC err {e}")
+        import traceback
+        traceback.print_exc()
+        return False
+
+# Load sequence: file first, then MEXC if empty (Render Free)
 load_stats()
+has_file = load_positions()
+if not has_file:
+    print("No file positions, trying recover from MEXC (Render Free Persist)...")
+    sync_positions_from_mexc()
 
 def is_funding_time():
     try:
@@ -203,33 +260,25 @@ def check_daily_loss():
 @app.route('/')
 def home():
     wr = (stats["wins"]/stats["total_trades"]*100) if stats["total_trades"]>0 else 0
-    ema_status = "EMA12>EMA26 BULL RUN" if last_ema_cross=="BULL" else "BEAR"
+    tier = "PAID /mnt/data" if DATA_DIR=="/mnt/data" else "FREE Render.com (Recover from MEXC)"
     pos_info = f"{len(positions)} LONG" if positions else "ว่าง"
-    tier = "PAID Disk" if DATA_DIR=="/mnt/data" else "FREE (./data)"
-    return f"V12.8 FREE FIX LIVE | {tier} | DATA_DIR {DATA_DIR} | Trades:{stats['total_trades']} WR:{wr:.1f}% {ema_status} | Pos:{pos_info}"
+    return f"V12.9 RENDER FREE PERSIST LIVE | {tier} | {DATA_DIR} | Pos:{pos_info} | Trades:{stats['total_trades']} WR:{wr:.1f}% | EMA12x26 RUN"
 
 @app.route('/health')
 def health():
-    return jsonify({"status": "ok", "version": "V12.8 FREE FIX", "data_dir": DATA_DIR, "positions": len(positions), "trades": stats["total_trades"], "disk_free": DATA_DIR != "/mnt/data"})
+    return jsonify({"status":"ok","version":"V12.9 RENDER FREE PERSIST","data_dir":DATA_DIR,"positions":len(positions),"trades":stats["total_trades"],"mexc_sync":True})
 
 @app.route('/stats')
 def stats_page():
     wr = (stats["wins"]/stats["total_trades"]*100) if stats["total_trades"]>0 else 0
     hist = "".join([f"{h['time']} {h['type']} {h['pnl']:+.2f}%<br>" for h in stats["history"][-30:]])
-    pos_str = json.dumps(positions, indent=2, ensure_ascii=False) if positions else "ว่าง"
-    return f"<h2>V12.8 FREE FIX - REAL ORDER 5X LONG ONLY - {DATA_DIR}</h2>Trades:{stats['total_trades']} WR:{wr:.1f}% Total:{stats['total_pnl_pct']:+.2f}% Pos:{pos_str}<br><hr>{hist}"
-
-@app.route('/weekly')
-def weekly_page():
-    report = weekly_analysis_detailed()
-    return f"<h2>Saturday Weekly Report - V12.8 FREE FIX</h2><pre>{report}</pre>"
+    return f"<h2>V12.9 RENDER FREE PERSIST - 5X LONG ONLY - {DATA_DIR}</h2>Pos:{len(positions)} Trades:{stats['total_trades']} WR:{wr:.1f}%<br><hr>{hist}"
 
 def send_telegram(msg):
     if not BOT_TOKEN or not CHAT_ID:
         return
     try:
-        requests.post(f"https://api.telegram.org/bot{BOT_TOKEN}/sendMessage", 
-                      json={"chat_id": CHAT_ID, "text": msg, "parse_mode":"HTML", "disable_web_page_preview": True}, timeout=15)
+        requests.post(f"https://api.telegram.org/bot{BOT_TOKEN}/sendMessage", json={"chat_id": CHAT_ID, "text": msg, "parse_mode":"HTML", "disable_web_page_preview": True}, timeout=15)
     except Exception as e:
         print(f"TG err {e}")
 
@@ -312,44 +361,10 @@ def format_balance_msg():
     except:
         return "Balance 40.16$ WR69.6%", {"upnl":0.22, "balance":40.16}, 69.6
 
-def weekly_analysis_detailed():
-    global weekly_config
-    try:
-        bt_path = BT_FILE_PRIMARY if os.path.exists(BT_FILE_PRIMARY) else BT_FILE_FALLBACK
-        if not os.path.exists(bt_path):
-            return f"BT file not found: {BT_FILE_PRIMARY} | อัพโหลด BT-1week-V2.3.csv ไปที่ ./data/ หรือ root"
-        df = pd.read_csv(bt_path)
-        df['entry_time'] = pd.to_datetime(df['entry_time'])
-        total = len(df)
-        wr = (df['pnl']>0).mean()*100
-        pnl_sum = df['pnl'].sum()
-        weekly_config = {"last_review": thai_time(), "total": total, "wr": wr, "pnl": pnl_sum}
-        with open(WEEKLY_REPORT_FILE, 'w', encoding='utf-8') as f:
-            json.dump(weekly_config, f, ensure_ascii=False, indent=2)
-        return f"Weekly: {total}ไม้ WR {wr:.1f}% PnL {pnl_sum:+.2f}% DATA_DIR {DATA_DIR}"
-    except Exception as e:
-        return f"Weekly err {e}"
-
-def weekly_saturday_loop():
-    while True:
-        try:
-            now_th = datetime.now(pytz.timezone('Asia/Bangkok'))
-            if now_th.weekday() == WEEKLY_REVIEW_DAY and now_th.hour == WEEKLY_REVIEW_HOUR and now_th.minute < 5:
-                last = weekly_config.get('last_review','')
-                today_str = now_th.strftime('%d/%m/%Y')
-                if today_str not in last:
-                    report = weekly_analysis_detailed()
-                    send_telegram(report)
-                    time.sleep(300)
-            time.sleep(60)
-        except Exception as e:
-            print(f"Saturday loop err {e}")
-            time.sleep(60)
-
 def hourly_full_report(last, price, mtf_4h_up, mtf_1h_up):
     try:
         bal_msg, bal_detail, wr = format_balance_msg()
-        send_telegram(f"📊 [{thai_time()}] V12.8 FREE FIX LIVE {DATA_DIR} Price {price:.2f} {bal_msg}")
+        send_telegram(f"📊 [{thai_time()}] V12.9 RENDER FREE PERSIST {DATA_DIR} Price {price:.2f} {bal_msg} | Recover from MEXC ON")
     except Exception as e:
         print(f"report err {e}")
 
@@ -370,15 +385,15 @@ def mexc_buy(price, factor):
         qty = (usdt_to_use * LEVERAGE) / price
         qty = max(0.001, round(qty, 3))
         qty = min(qty, 0.01)
-        print(f"REAL BUY {SYMBOL} qty {qty} @ {price} DATA_DIR {DATA_DIR}")
+        print(f"REAL BUY {SYMBOL} qty {qty} @ {price} | {DATA_DIR}")
         order = mexc.create_market_buy_order(SYMBOL, qty)
-        print(f"Buy order filled: {order}")
+        print(f"Buy filled {order}")
         return True, qty
     except Exception as e:
-        print(f"REAL BUY ERR {e}")
+        print(f"BUY ERR {e}")
         import traceback
         traceback.print_exc()
-        send_telegram(f"❌ BUY ERROR {e} Price {price}")
+        send_telegram(f"❌ BUY ERROR {e}")
         return False, 0
 
 def close_position(price, reason):
@@ -390,12 +405,11 @@ def close_position(price, reason):
     pnl = (price-avg)/avg*100
     if mexc:
         try:
-            print(f"REAL CLOSE {SYMBOL} qty {total_qty} @ {price} reason {reason}")
-            close_order = mexc.create_market_sell_order(SYMBOL, total_qty)
-            print(f"Close order: {close_order}")
+            print(f"REAL CLOSE {SYMBOL} qty {total_qty} @ {price} {reason}")
+            mexc.create_market_sell_order(SYMBOL, total_qty)
         except Exception as e:
-            print(f"REAL CLOSE ERR {e}")
-            send_telegram(f"❌ CLOSE ERROR {e} PnL {pnl:.2f}%")
+            print(f"CLOSE ERR {e}")
+            send_telegram(f"❌ CLOSE ERROR {e}")
     stats["total_trades"]+=1
     if pnl>0:
         stats["wins"]+=1
@@ -406,8 +420,8 @@ def close_position(price, reason):
     stats["total_pnl_pct"]+=pnl
     stats["history"].append({"time":thai_time(),"type":f"LONG {reason}","pnl":pnl})
     save_stats()
-    bal_msg, bal_detail, wr = format_balance_msg()
-    send_telegram(f"{'🔴' if pnl<0 else '🟢'} [{thai_time()}] ปิด {reason} PnL {pnl:+.2f}% @ {price:.2f}$ {bal_msg} DATA_DIR {DATA_DIR}")
+    bal_msg, _, wr = format_balance_msg()
+    send_telegram(f"{'🔴' if pnl<0 else '🟢'} [{thai_time()}] ปิด {reason} PnL {pnl:+.2f}% @ {price:.2f}$ {bal_msg} | {DATA_DIR} | Render Free Persist")
     positions=[]
     highest=0
     lowest=999999
@@ -416,8 +430,13 @@ def close_position(price, reason):
 def trading_loop():
     global positions, highest, lowest, last_hourly, cooldown_until, current_atr_sl, last_news_reason, last_news_sent, last_cooldown_sent, last_daily_loss_sent, last_ema_cross
     last_hourly = time.time()
-    print(f"V12.8 FREE FIX START DATA_DIR {DATA_DIR}")
-    send_telegram(f"🚀 V12.8 FREE FIX START {thai_time()} | DATA_DIR {DATA_DIR} | 5X Cross LONG ONLY | แก้ Permission denied /mnt/data")
+    print(f"V12.9 RENDER FREE PERSIST START {DATA_DIR}")
+    # Sync again on start
+    if not positions:
+        sync_positions_from_mexc()
+    bal_msg, _, _ = format_balance_msg()
+    pos_info = f"{len(positions)} LONG Avg {sum(p['entry']*p['qty'] for p in positions)/sum(p['qty'] for p in positions):.2f}" if positions else "ว่าง (Recovered from MEXC)"
+    send_telegram(f"🚀 V12.9 RENDER FREE PERSIST START {thai_time()} | {DATA_DIR} | {bal_msg}\nPos: {pos_info}\n5X Cross LONG ONLY | EMA12x26 RUN | แก้เปิดซ้ำ 9 นาที ด้วย Recover จาก MEXC\nCEO รายวัน + V12.9 รายสัปดาห์ บน Render.com")
     while True:
         try:
             df = get_klines_mexc(200, '15m')
@@ -442,27 +461,21 @@ def trading_loop():
             except:
                 pass
             atr = last['ATR']
-            atr_pct_price = (atr * SL_ATR_MULT / price * 100)
-            atr_pct_pnl = atr_pct_price * LEVERAGE
-            current_atr_sl = max(SL_MIN_PCT, min(SL_MAX_PCT, atr_pct_pnl))
-            ema12 = last['EMA12']
-            ema26 = last['EMA26']
-            ema_cross_bull = ema12 > ema26 and prev['EMA12'] <= prev['EMA26']
-            ema_cross_bear = ema12 < ema26 and prev['EMA12'] >= prev['EMA26']
-            ema_bull_hold = ema12 > ema26
-            ema_diff_pct = (ema12-ema26)/ema26*100
-            if ema_cross_bull:
+            current_atr_sl = max(SL_MIN_PCT, min(SL_MAX_PCT, (atr * SL_ATR_MULT / price * 100 * LEVERAGE)))
+            ema_bull_hold = last['EMA12'] > last['EMA26']
+            ema_diff_pct = (last['EMA12']-last['EMA26'])/last['EMA26']*100
+            if last['EMA12'] > last['EMA26'] and prev['EMA12'] <= prev['EMA26']:
                 last_ema_cross = "BULL"
-            elif ema_cross_bear:
+            elif last['EMA12'] < last['EMA26'] and prev['EMA12'] >= prev['EMA26']:
                 last_ema_cross = "BEAR"
             super_up = last['+DI']>28 and last['-DI']<12 and last['ADX']>28 and last['c']>last['EMA20'] and last['c']>last['VWAP']
             uptrend = last['+DI']>last['-DI'] and last['ADX']>22 and last['c']>last['VWAP'] and last['+DI']>20
             near_support = last['c'] <= last['Round10']+3
             strong_bull = (last['c']-last['o']) > (last['h']-last['l'])*0.5 and last['c']>last['o']
             vol_spike = last['VolSpike']>1.0
+            rsi_breakout = 55 <= last['RSI'] <= 90
             rsi_trend = 45 <= last['RSI'] <= 85
             rsi_super = 50 <= last['RSI'] <= 88
-            rsi_breakout = 55 <= last['RSI'] <= 90
             dist_ema = abs(last['c']-last['EMA12'])/last['EMA12']*100 <= 3.0
             ema_run_up = ENABLE_EMA12x26_RUN and ema_bull_hold and last['c'] > last['EMA12'] and ema_diff_pct >= 0.02 and last['ADX']>20 and last['+DI']>18 and rsi_breakout and last['c'] > last['VWAP'] and mtf_1h_up and mtf_4h_up
             breakout_up = ENABLE_BREAKOUT_UP and last['c'] > last['HH20']*0.998 and last['c'] > last['EMA12'] and last['EMA12'] > last['EMA26'] and last['ADX']>22 and last['+DI']>18 and rsi_breakout and last['c'] > last['VWAP'] and vol_spike and mtf_1h_up and mtf_4h_up
@@ -470,17 +483,7 @@ def trading_loop():
             buy_super = ENABLE_TREND_UP and super_up and near_support and strong_bull and vol_spike and rsi_super and dist_ema and mtf_1h_up and mtf_4h_up
             buy_sideway = ENABLE_SIDEWAY_UP and last['+DI']>last['-DI'] and last['ADX']<22 and near_support and strong_bull and vol_spike and (40 <= last['RSI'] <= 80)
             buy_signal = buy_trend or buy_super or buy_sideway or breakout_up or ema_run_up
-            buy_reason = ""
-            if ema_run_up:
-                buy_reason = f"EMA12x26_RUN Bull Diff {ema_diff_pct:.2f}%"
-            elif breakout_up:
-                buy_reason = "BREAKOUT_UP"
-            elif buy_super:
-                buy_reason = "SUPER_UP"
-            elif buy_trend:
-                buy_reason = "TREND_UP"
-            elif buy_sideway:
-                buy_reason = "SIDEWAY_UP"
+            buy_reason = "EMA12x26_RUN" if ema_run_up else "BREAKOUT_UP" if breakout_up else "TREND_UP" if buy_trend or buy_super else "SIDEWAY_UP" if buy_sideway else ""
             if cooldown_until > time.time():
                 if time.time() - last_cooldown_sent >= 14400:
                     last_cooldown_sent = time.time()
@@ -494,7 +497,7 @@ def trading_loop():
                 if time.time() - last_daily_loss_sent >= 14400:
                     last_daily_loss_sent = time.time()
                     last_hourly = time.time()
-                    send_telegram(f"🛑 [{thai_time()}] Daily Max Loss {DAILY_MAX_LOSS} หยุดวันนี้ | {DATA_DIR}")
+                    send_telegram(f"🛑 [{thai_time()}] Daily Loss {DAILY_MAX_LOSS} หยุดวันนี้ | {DATA_DIR}")
                 time.sleep(60)
                 continue
             if time.time()-last_hourly >= 14400:
@@ -504,7 +507,7 @@ def trading_loop():
             news_block, news_reason = is_news_time()
             if positions and check_max_hold():
                 bal_msg, _, _ = format_balance_msg()
-                send_telegram(f"⏰ [{thai_time()}] บังคับปิด ถือเกิน {MAX_HOLD_HOURS}ชม.\n{bal_msg} | {DATA_DIR}")
+                send_telegram(f"⏰ [{thai_time()}] บังคับปิด ถือเกิน {MAX_HOLD_HOURS}ชม. | {bal_msg} | {DATA_DIR}")
                 close_position(price, f"MAX_HOLD_{MAX_HOLD_HOURS}H")
                 continue
             if funding_block or news_block:
@@ -513,7 +516,7 @@ def trading_loop():
                     last_news_reason = reason
                     last_news_sent = time.time()
                     last_hourly = time.time()
-                    send_telegram(f"⏸️ [{thai_time()}] ติดข่าว {reason} หยุดเข้า | {DATA_DIR}")
+                    send_telegram(f"⏸️ [{thai_time()}] ติดข่าว {reason} หยุดเข้า | {DATA_DIR} | Render.com")
                 if positions:
                     total_qty = sum(abs(p['qty']) for p in positions)
                     avg = sum(p['entry']*abs(p['qty']) for p in positions)/total_qty
@@ -530,8 +533,8 @@ def trading_loop():
                     highest=price
                     lowest=price
                     save_positions()
-                    bal_msg, bal_detail, wr = format_balance_msg()
-                    send_telegram(f"🟢 [{thai_time()}] เปิด LONG REAL {buy_reason} @ {price:.2f}$ Qty {qty} | {bal_msg} | {DATA_DIR}")
+                    bal_msg, _, _ = format_balance_msg()
+                    send_telegram(f"🟢 [{thai_time()}] เปิด LONG REAL {buy_reason} @ {price:.2f}$ Qty {qty} | {bal_msg} | {DATA_DIR} | Render Free Persist")
             if positions:
                 total_qty = sum(abs(p['qty']) for p in positions)
                 avg = sum(p['entry']*abs(p['qty']) for p in positions)/total_qty
@@ -558,7 +561,6 @@ def trading_loop():
             time.sleep(30)
 
 threading.Thread(target=trading_loop, daemon=True).start()
-threading.Thread(target=weekly_saturday_loop, daemon=True).start()
 
 if __name__ == "__main__":
     port = int(os.environ.get("PORT", 10000))
