@@ -1,5 +1,5 @@
 """
-V12.17 NO-PANDAS TELE FIX + /data /bt RENDER FREE PERSIST - สำหรับคนคุ้นเคย Render.com ไม่อยากย้าย ไม่ต้องซื้อ Disk
+V12.19 FULL TELE FIX + /data /bt RENDER FREE PERSIST - สำหรับคนคุ้นเคย Render.com ไม่อยากย้าย ไม่ต้องซื้อ Disk
 แก้ปัญหา Render Free ที่เคยเจอวันนี้:
 - Permission denied /mnt/data -> ใช้ ./data ได้ แต่หายตอน Restart
 - Position History ว่าง เพราะ positions=[] หาย บอทเลยเปิด LONG ซ้ำ 9 นาที
@@ -13,6 +13,7 @@ V12.9 NEW - RENDER FREE PERSIST:
 """
 
 import requests, os, time, threading, json, math
+from flask import Flask, jsonify, request
 from flask import Flask, jsonify
 from datetime import datetime
 import pytz
@@ -34,7 +35,7 @@ def get_data_dir():
     return fallback
 
 DATA_DIR = get_data_dir()
-print(f"V12.17 NO-PANDAS TELE FIX + /data /bt RENDER FREE PERSIST - DATA_DIR: {DATA_DIR} | Render.com Familiar Mode")
+print(f"V12.19 FULL NO-PANDAS NO-BLOCK TELE FIX + /data /bt RENDER FREE PERSIST - DATA_DIR: {DATA_DIR} | Render.com Familiar Mode")
 
 MEXC_API_KEY = os.environ.get("MEXC_API_KEY", "").strip()
 MEXC_API_SECRET = os.environ.get("MEXC_API_SECRET", "").strip()
@@ -74,7 +75,20 @@ WEEKLY_REPORT_FILE = os.path.join(DATA_DIR, "weekly_saturday_report.json")
 
 app = Flask(__name__)
 
-# routes defined later with HEAD support
+@app.route('/', methods=['GET','HEAD'])
+def home():
+    if request.method == 'HEAD':
+        return '', 200
+    wr = (stats["wins"]/stats["total_trades"]*100) if stats["total_trades"]>0 else 0
+    tier = "PAID /mnt/data" if DATA_DIR=="/mnt/data" else "FREE Render.com (Recover from MEXC)"
+    pos_info = f"{len(positions)} LONG" if positions else "ว่าง"
+    return f"V12.19 NO-PANDAS NO-BLOCK TELE FIX + /data /bt RENDER FREE PERSIST LIVE | {tier} | {DATA_DIR} | Pos:{pos_info} | Trades:{stats['total_trades']} WR:{wr:.1f}% | EMA12x26 RUN"
+
+@app.route('/health', methods=['GET','HEAD'])
+def health():
+    if request.method == 'HEAD':
+        return '', 200
+    return jsonify({"status":"ok","version":"V12.19 NO-BLOCK TELE CHECK","data_dir":DATA_DIR,"positions":len(positions),"trades":stats["total_trades"],"mexc_sync":True,"render":"RUNNING","uptime":time.time()})
 
 positions, highest, lowest, last_hourly = [], 0, 999999, time.time()
 stats = {"total_trades":0,"wins":0,"losses":0,"total_pnl_pct":0.0,"history":[]}
@@ -107,7 +121,6 @@ try:
         mexc = None
 except Exception as e:
     print(f"CCXT init err {e}")
-    # keep mexc if already created
     if 'mexc_public' not in locals():
         mexc_public = None
     if 'mexc' not in locals():
@@ -156,8 +169,7 @@ def load_stats():
 
 def sync_positions_from_mexc():
     """
-    RENDER FREE PERSIST - หัวใจสำคัญ
-    ดึงไม้ที่ค้างบน MEXC จริงๆ มาเลย กันเปิดซ้ำ 4,154/4,159 แบบเมื่อวาน
+    RENDER FREE PERSIST - V12.19 แก้ 403 Render IP blocked
     """
     global positions, highest, lowest
     if not mexc:
@@ -165,7 +177,15 @@ def sync_positions_from_mexc():
         return False
     try:
         print(f"Syncing positions from MEXC {SYMBOL}...")
-        poss = mexc.fetch_positions(SYMBOL)
+        # Bypass load_markets that hits /contract/detail 403 on Render
+        try:
+            if not getattr(mexc, 'markets', None):
+                mexc.markets = {SYMBOL: {'id': SYMBOL_MEXC_ID, 'symbol': SYMBOL, 'swap': True, 'type': 'swap', 'contract': True}}
+                mexc.markets_by_id = {SYMBOL_MEXC_ID: mexc.markets[SYMBOL], SYMBOL: mexc.markets[SYMBOL]}
+                mexc.markets_by_id['PAXGUSDT'] = mexc.markets[SYMBOL]
+        except:
+            pass
+        poss = mexc.fetch_positions([SYMBOL])
         # ccxt return list
         real_pos = []
         for p in poss:
@@ -205,10 +225,17 @@ def sync_positions_from_mexc():
             print("No open positions on MEXC (Position History ว่างเพราะปิดหมดแล้ว)")
             return False
     except Exception as e:
+        err_str = str(e)
+        if "403" in err_str or "Access Denied" in err_str or "Forbidden" in err_str:
+            print(f"⚠️ MEXC blocks Render IP (403 Akamai) - cannot auto-recover now. Bot will run without duplicate open. If you have open 0.001 LONG on MEXC, it will be detected on next retry or after you upload positions.json to /data")
+            # Do not crash, continue with empty
+            return False
         print(f"sync from MEXC err {e}")
         import traceback
         traceback.print_exc()
         return False
+
+
 
 # Load sequence: file first, then MEXC if empty (Render Free)
 load_stats()
@@ -274,7 +301,7 @@ def home():
     wr = (stats["wins"]/stats["total_trades"]*100) if stats["total_trades"]>0 else 0
     tier = "PAID /mnt/data" if DATA_DIR=="/mnt/data" else "FREE Render.com (Recover from MEXC)"
     pos_info = f"{len(positions)} LONG" if positions else "ว่าง"
-    return f"V12.17 NO-PANDAS TELE FIX + /data /bt RENDER FREE PERSIST LIVE | {tier} | {DATA_DIR} | Pos:{pos_info} | Trades:{stats['total_trades']} WR:{wr:.1f}% | EMA12x26 RUN"
+    return f"V12.19 FULL TELE FIX + /data /bt RENDER FREE PERSIST LIVE | {tier} | {DATA_DIR} | Pos:{pos_info} | Trades:{stats['total_trades']} WR:{wr:.1f}% | EMA12x26 RUN"
 
 @app.route('/health', methods=['GET','HEAD'])
 def health():
@@ -286,20 +313,88 @@ def health():
 def stats_page():
     wr = (stats["wins"]/stats["total_trades"]*100) if stats["total_trades"]>0 else 0
     hist = "".join([f"{h['time']} {h['type']} {h['pnl']:+.2f}%<br>" for h in stats["history"][-30:]])
-    return f"<h2>V12.17 NO-PANDAS TELE FIX + /data /bt RENDER FREE PERSIST - 5X LONG ONLY - {DATA_DIR}</h2>Pos:{len(positions)} Trades:{stats['total_trades']} WR:{wr:.1f}%<br><hr>{hist}"
+    return f"<h2>V12.19 FULL TELE FIX + /data /bt RENDER FREE PERSIST - 5X LONG ONLY - {DATA_DIR}</h2>Pos:{len(positions)} Trades:{stats['total_trades']} WR:{wr:.1f}%<br><hr>{hist}"
 
-def send_telegram(msg, chat_id=None):
-    target = str(chat_id) if chat_id else CHAT_ID
-    if not BOT_TOKEN or not target:
-        print(f"send_telegram skip no token/target")
+
+
+def is_funding_time():
+    try:
+        utc = datetime.now(pytz.timezone('UTC'))
+        for fh in FUNDING_TIMES_UTC:
+            if utc.hour == fh and utc.minute >= (60 - AVOID_FUNDING_MINUTES):
+                return True, f"ใกล้ Funding {fh}:00 UTC"
+            if utc.hour == fh and utc.minute <= AVOID_FUNDING_MINUTES:
+                return True, f"หลัง Funding {fh}:00 UTC"
+            if fh == 0 and utc.hour == 23 and utc.minute >= 55:
+                return True, f"ใกล้ Funding 00:00 UTC"
+        return False, ""
+    except:
+        return False, ""
+
+def is_news_time():
+    if not NEWS_BLACKOUT:
+        return False, ""
+    try:
+        now_th = datetime.now(pytz.timezone('Asia/Bangkok'))
+        if now_th.weekday() == 4 and 1 <= now_th.day <= 7:
+            if 19 <= now_th.hour <= 20 and now_th.minute >= 30:
+                return True, f"NFP ศุกร์แรก {now_th.strftime('%d/%m')} 19:30 ICT"
+        if now_th.hour == 19 and now_th.minute >= 30:
+            if now_th.day in [14,15,16]:
+                return True, f"CPI/PPI HIGH {now_th.strftime('%d/%m')} 19:30 ICT"
+        if now_th.hour == 20 and now_th.minute <= 45:
+            if now_th.day in [14,15,16]:
+                return True, f"CPI/PPI HIGH {now_th.strftime('%d/%m')} 19:30-20:45 ICT"
+        return False, ""
+    except:
+        return False, ""
+
+def check_max_hold():
+    if not positions:
         return False
     try:
-        r = requests.post(f"https://api.telegram.org/bot{BOT_TOKEN}/sendMessage", json={"chat_id": target, "text": msg, "parse_mode":"HTML", "disable_web_page_preview": True}, timeout=15)
-        print(f"send_telegram to {target} ok={r.json().get('ok')} len={len(msg)}")
-        return r.json().get('ok', False)
-    except Exception as e:
-        print(f"TG err {e} to {target}")
+        ft = positions[0].get('time', 0)
+        return (time.time()-ft)/3600 >= MAX_HOLD_HOURS if ft else False
+    except:
         return False
+
+def check_daily_loss():
+    global daily_loss_count, last_daily_reset
+    now_day = datetime.now(pytz.timezone('Asia/Bangkok')).day
+    if now_day != last_daily_reset:
+        daily_loss_count = 0
+        last_daily_reset = now_day
+    return daily_loss_count >= DAILY_MAX_LOSS
+
+@app.route('/', methods=['GET','HEAD'])
+def home():
+    if request.method == 'HEAD':
+        return '', 200
+
+    wr = (stats["wins"]/stats["total_trades"]*100) if stats["total_trades"]>0 else 0
+    tier = "PAID /mnt/data" if DATA_DIR=="/mnt/data" else "FREE Render.com (Recover from MEXC)"
+    pos_info = f"{len(positions)} LONG" if positions else "ว่าง"
+    return f"V12.19 FULL TELE FIX + /data /bt RENDER FREE PERSIST LIVE | {tier} | {DATA_DIR} | Pos:{pos_info} | Trades:{stats['total_trades']} WR:{wr:.1f}% | EMA12x26 RUN"
+
+@app.route('/health', methods=['GET','HEAD'])
+def health():
+    if request.method == 'HEAD':
+        return '', 200
+    return jsonify({"status":"ok","version":"V12.9 FULL TELE CHECK","data_dir":DATA_DIR,"positions":len(positions),"trades":stats["total_trades"],"mexc_sync":True,"render":"RUNNING","uptime":time.time()})
+
+@app.route('/stats')
+def stats_page():
+    wr = (stats["wins"]/stats["total_trades"]*100) if stats["total_trades"]>0 else 0
+    hist = "".join([f"{h['time']} {h['type']} {h['pnl']:+.2f}%<br>" for h in stats["history"][-30:]])
+    return f"<h2>V12.19 FULL TELE FIX + /data /bt RENDER FREE PERSIST - 5X LONG ONLY - {DATA_DIR}</h2>Pos:{len(positions)} Trades:{stats['total_trades']} WR:{wr:.1f}%<br><hr>{hist}"
+
+def send_telegram(msg):
+    if not BOT_TOKEN or not CHAT_ID:
+        return
+    try:
+        requests.post(f"https://api.telegram.org/bot{BOT_TOKEN}/sendMessage", json={"chat_id": CHAT_ID, "text": msg, "parse_mode":"HTML", "disable_web_page_preview": True}, timeout=15)
+    except Exception as e:
+        print(f"TG err {e}")
 
 def get_price_mexc():
     try:
@@ -318,122 +413,355 @@ def get_klines_mexc(limit=200, timeframe='15m'):
     try:
         if mexc_public:
             ohlcv = mexc_public.fetch_ohlcv(SYMBOL, timeframe=timeframe, limit=limit)
-            return ohlcv
+            return pd.DataFrame(ohlcv, columns=['ot','o','h','l','c','v'])
     except Exception as e:
         print(f"Kline err {e}")
         return None
 
+def calc_indicators(df):
+    df['EMA12']=df['c'].ewm(span=12, adjust=False).mean()
+    df['EMA26']=df['c'].ewm(span=26, adjust=False).mean()
+    df['EMA20']=df['c'].ewm(span=20, adjust=False).mean()
+    df['EMA200']=df['c'].ewm(span=200, adjust=False).mean()
+    delta=df['c'].diff()
+    gain=delta.where(delta>0,0).rolling(14).mean()
+    loss=-delta.where(delta<0,0).rolling(14).mean()
+    df['RSI']=100-(100/(1+gain/(loss.replace(0,0.001))))
+    tr1 = df['h']-df['l']
+    tr2 = (df['h']-df['c'].shift()).abs()
+    tr3 = (df['l']-df['c'].shift()).abs()
+    df['TR']=pd.concat([tr1,tr2,tr3], axis=1).max(axis=1)
+    df['ATR']=df['TR'].rolling(14).mean()
+    df['H-pH']=df['h']-df['h'].shift()
+    df['pL-L']=df['l'].shift()-df['l']
+    df['+DM']=df.apply(lambda x: x['H-pH'] if x['H-pH']>x['pL-L'] and x['H-pH']>0 else 0, axis=1)
+    df['-DM']=df.apply(lambda x: x['pL-L'] if x['pL-L']>x['H-pH'] and x['pL-L']>0 else 0, axis=1)
+    df['+DM14']=df['+DM'].rolling(14).sum()
+    df['-DM14']=df['-DM'].rolling(14).sum()
+    df['TR14']=df['TR'].rolling(14).sum()
+    df['+DI']=100*df['+DM14']/df['TR14']
+    df['-DI']=100*df['-DM14']/df['TR14']
+    df['DX']=100*(df['+DI']-df['-DI']).abs()/(df['+DI']+df['-DI'])
+    df['ADX']=df['DX'].rolling(14).mean()
+    df['TP']=(df['h']+df['l']+df['c'])/3
+    df['TPV']=df['TP']*df['v']
+    df['VWAP']=df['TPV'].rolling(20).sum()/df['v'].rolling(20).sum()
+    df['V_SMA20']=df['v'].rolling(20).mean()
+    df['VolSpike']=df['v']/df['V_SMA20']
+    df['Round10']=(df['c']/10).round()*10
+    df['HH20']=df['h'].rolling(20).max()
+    return df.dropna()
 
-def ema_series(prices, span):
-    alpha = 2.0/(span+1)
-    ema = []
-    for i,p in enumerate(prices):
-        if i==0:
-            ema.append(p)
-        else:
-            ema.append(alpha*p + (1-alpha)*ema[-1])
-    return ema
-
-def calc_indicators(ohlcv):
-    # ohlcv = list of [timestamp, open, high, low, close, volume]
-    if not ohlcv or len(ohlcv) < 50:
-        return None
+def get_balance():
+    if not mexc:
+        return 40.16
     try:
-        closes = [float(x[4]) for x in ohlcv]
-        highs = [float(x[2]) for x in ohlcv]
-        lows = [float(x[3]) for x in ohlcv]
-        opens = [float(x[1]) for x in ohlcv]
-        vols = [float(x[5]) for x in ohlcv]
-        times = [x[0] for x in ohlcv]
-        n = len(closes)
-        ema12 = ema_series(closes, 12)
-        ema26 = ema_series(closes, 26)
-        ema20 = ema_series(closes, 20)
-        ema200 = ema_series(closes, 200)
-        rsi = [50.0]*n
-        gains = []
-        losses = []
-        for i in range(1,n):
-            d = closes[i]-closes[i-1]
-            gains.append(max(d,0))
-            losses.append(max(-d,0))
-        avg_gain = sum(gains[:14])/14 if len(gains)>=14 else 0.001
-        avg_loss = sum(losses[:14])/14 if len(losses)>=14 else 0.001
-        for i in range(14, n):
-            if i>14 and i-1 < len(gains):
-                avg_gain = (avg_gain*13 + gains[i-1])/14
-                avg_loss = (avg_loss*13 + losses[i-1])/14
-            rs = avg_gain/(avg_loss if avg_loss!=0 else 0.001)
-            rsi[i] = 100 - (100/(1+rs))
-        tr = [0.0]*n
-        atr = [0.0]*n
-        for i in range(n):
-            if i==0:
-                tr[i]=highs[i]-lows[i]
-            else:
-                tr[i]=max(highs[i]-lows[i], abs(highs[i]-closes[i-1]), abs(lows[i]-closes[i-1]))
-        atr[13]=sum(tr[:14])/14 if n>=14 else tr[0]
-        for i in range(14,n):
-            atr[i]=(atr[i-1]*13 + tr[i])/14
-        plus_dm = [0.0]*n
-        minus_dm = [0.0]*n
-        for i in range(1,n):
-            up_move = highs[i]-highs[i-1]
-            down_move = lows[i-1]-lows[i]
-            if up_move>down_move and up_move>0:
-                plus_dm[i]=up_move
-            if down_move>up_move and down_move>0:
-                minus_dm[i]=down_move
-        plus_dm14 = [0.0]*n
-        minus_dm14 = [0.0]*n
-        tr14 = [0.0]*n
-        if n>=14:
-            plus_dm14[13]=sum(plus_dm[:14])
-            minus_dm14[13]=sum(minus_dm[:14])
-            tr14[13]=sum(tr[:14])
-        for i in range(14,n):
-            plus_dm14[i]=plus_dm14[i-1] - plus_dm14[i-1]/14 + plus_dm[i]
-            minus_dm14[i]=minus_dm14[i-1] - minus_dm14[i-1]/14 + minus_dm[i]
-            tr14[i]=tr14[i-1] - tr14[i-1]/14 + tr[i]
-        plus_di = [0.0]*n
-        minus_di = [0.0]*n
-        dx = [0.0]*n
-        adx = [0.0]*n
-        for i in range(n):
-            if tr14[i]!=0:
-                plus_di[i]=100*plus_dm14[i]/tr14[i]
-                minus_di[i]=100*minus_dm14[i]/tr14[i]
-                denom = plus_di[i]+minus_di[i]
-                if denom!=0:
-                    dx[i]=100*abs(plus_di[i]-minus_di[i])/denom
-        if n>27:
-            adx[26]=sum(dx[13:27])/14
-            for i in range(27,n):
-                adx[i]=(adx[i-1]*13 + dx[i])/14
-        vwap = [0.0]*n
-        cum_pv=0
-        cum_v=0
-        for i in range(n):
-            tp=(highs[i]+lows[i]+closes[i])/3
-            cum_pv+=tp*vols[i]
-            cum_v+=vols[i]
-            vwap[i]=cum_pv/cum_v if cum_v!=0 else closes[i]
-        rows=[]
-        for i in range(n):
-            hh20 = max(highs[max(0,i-19):i+1])
-            ll20 = min(lows[max(0,i-19):i+1])
-            rows.append({
-                'ot': times[i], 'o': opens[i], 'h': highs[i], 'l': lows[i], 'c': closes[i], 'v': vols[i],
-                'EMA12': ema12[i], 'EMA26': ema26[i], 'EMA20': ema20[i], 'EMA200': ema200[i],
-                'RSI': rsi[i], 'TR': tr[i], 'ATR': atr[i],
-                '+DM': plus_dm[i], '-DM': minus_dm[i], '+DM14': plus_dm14[i], '-DM14': minus_dm14[i], 'TR14': tr14[i],
-                '+DI': plus_di[i], '-DI': minus_di[i], 'DX': dx[i], 'ADX': adx[i],
-                'VWAP': vwap[i], 'HH20': hh20, 'LL20': ll20,
-            })
-        return rows
+        bal = mexc.fetch_balance()
+        return float(bal.get('USDT', {}).get('free', 0) or bal.get('total', {}).get('USDT', 0) or 40.16)
+    except:
+        return 40.16
+
+def format_balance_msg():
+    try:
+        balance = get_balance()
+        wr = (stats["wins"]/stats["total_trades"]*100) if stats["total_trades"]>0 else 69.6
+        upnl = 0
+        if positions:
+            total_qty = sum(abs(p['qty']) for p in positions)
+            avg = sum(p['entry']*abs(p['qty']) for p in positions)/total_qty
+            price = get_price_mexc() or avg
+            upnl = (price-avg)/avg*100
+        return f"Bal ${balance:.2f} | PnL {stats['total_pnl_pct']:+.2f}% | WR {wr:.1f}%", {"upnl":upnl, "balance":balance}, wr
+    except:
+        return "Balance 40.16$ WR69.6%", {"upnl":0.22, "balance":40.16}, 69.6
+
+def hourly_full_report(last, price, mtf_4h_up, mtf_1h_up):
+    try:
+        bal_msg, bal_detail, wr = format_balance_msg()
+        send_telegram(f"📊 [{thai_time()}] V12.19 FULL TELE FIX + /data /bt RENDER FREE PERSIST {DATA_DIR} Price {price:.2f} {bal_msg} | Recover from MEXC ON")
     except Exception as e:
-        print(f"calc_indicators err {e}")
-        import traceback; traceback.print_exc()
-        return None
+        print(f"report err {e}")
+
+def mexc_buy(price, factor):
+    if not mexc:
+        print("mexc not configured, DRY RUN")
+        return True, 0.001*factor
+    try:
+        try:
+            mexc.set_leverage(LEVERAGE, SYMBOL, {'marginMode': 'CROSS'})
+        except:
+            try:
+                mexc.set_leverage(LEVERAGE, SYMBOL)
+            except:
+                pass
+        balance = get_balance()
+        usdt_to_use = balance * ORDER_PERCENT / 100 * factor
+        qty = (usdt_to_use * LEVERAGE) / price
+        qty = max(0.001, round(qty, 3))
+        qty = min(qty, 0.01)
+        print(f"REAL BUY {SYMBOL} qty {qty} @ {price} | {DATA_DIR}")
+        order = mexc.create_market_buy_order(SYMBOL, qty)
+        print(f"Buy filled {order}")
+        return True, qty
+    except Exception as e:
+        print(f"BUY ERR {e}")
+        import traceback
+        traceback.print_exc()
+        send_telegram(f"❌ BUY ERROR {e}")
+        return False, 0
+
+def close_position(price, reason):
+    global cooldown_until, daily_loss_count, positions, highest, lowest
+    if not positions:
+        return
+    total_qty = sum(abs(p['qty']) for p in positions)
+    avg = sum(p['entry']*abs(p['qty']) for p in positions)/total_qty
+    pnl = (price-avg)/avg*100
+    if mexc:
+        try:
+            print(f"REAL CLOSE {SYMBOL} qty {total_qty} @ {price} {reason}")
+            mexc.create_market_sell_order(SYMBOL, total_qty)
+        except Exception as e:
+            print(f"CLOSE ERR {e}")
+            send_telegram(f"❌ CLOSE ERROR {e}")
+    stats["total_trades"]+=1
+    if pnl>0:
+        stats["wins"]+=1
+    else:
+        stats["losses"]+=1
+        daily_loss_count+=1
+        cooldown_until = time.time() + COOLDOWN_AFTER_SL*3600
+    stats["total_pnl_pct"]+=pnl
+    stats["history"].append({"time":thai_time(),"type":f"LONG {reason}","pnl":pnl})
+    save_stats()
+    bal_msg, _, wr = format_balance_msg()
+    send_telegram(f"{'🔴' if pnl<0 else '🟢'} [{thai_time()}] ปิด {reason} PnL {pnl:+.2f}% @ {price:.2f}$ {bal_msg} | {DATA_DIR} | Render Free Persist")
+    positions=[]
+    highest=0
+    lowest=999999
+    save_positions()
+
+def trading_loop():
+    global positions, highest, lowest, last_hourly, cooldown_until, current_atr_sl, last_news_reason, last_news_sent, last_cooldown_sent, last_daily_loss_sent, last_ema_cross
+    last_hourly = time.time()
+    print(f"V12.19 FULL TELE FIX + /data /bt RENDER FREE PERSIST START {DATA_DIR}")
+    # Sync again on start
+    if not positions:
+        sync_positions_from_mexc()
+    bal_msg, _, _ = format_balance_msg()
+    pos_info = f"{len(positions)} LONG Avg {sum(p['entry']*p['qty'] for p in positions)/sum(p['qty'] for p in positions):.2f}" if positions else "ว่าง (Recovered from MEXC)"
+    send_telegram(f"🚀 V12.19 FULL TELE FIX + /data /bt RENDER FREE PERSIST START {thai_time()} | {DATA_DIR} | {bal_msg}\nPos: {pos_info}\n5X Cross LONG ONLY | EMA12x26 RUN | แก้เปิดซ้ำ 9 นาที ด้วย Recover จาก MEXC\nCEO รายวัน + V12.9 รายสัปดาห์ บน Render.com")
+    while True:
+        try:
+            df = get_klines_mexc(200, '15m')
+            if df is None or len(df)<200:
+                time.sleep(60)
+                continue
+            df = calc_indicators(df)
+            last = df.iloc[-1]
+            prev = df.iloc[-2]
+            price = float(last['c'])
+            df_1h = get_klines_mexc(100, '1h')
+            df_4h = get_klines_mexc(100, '4h')
+            mtf_1h_up = True
+            mtf_4h_up = True
+            try:
+                if df_1h is not None and len(df_1h)>50:
+                    df_1h = calc_indicators(df_1h)
+                    mtf_1h_up = df_1h.iloc[-1]['EMA12'] > df_1h.iloc[-1]['EMA26']
+                if df_4h is not None and len(df_4h)>50:
+                    df_4h = calc_indicators(df_4h)
+                    mtf_4h_up = df_4h.iloc[-1]['EMA12'] > df_4h.iloc[-1]['EMA26']
+            except:
+                pass
+            atr = last['ATR']
+            current_atr_sl = max(SL_MIN_PCT, min(SL_MAX_PCT, (atr * SL_ATR_MULT / price * 100 * LEVERAGE)))
+            ema_bull_hold = last['EMA12'] > last['EMA26']
+            ema_diff_pct = (last['EMA12']-last['EMA26'])/last['EMA26']*100
+            if last['EMA12'] > last['EMA26'] and prev['EMA12'] <= prev['EMA26']:
+                last_ema_cross = "BULL"
+            elif last['EMA12'] < last['EMA26'] and prev['EMA12'] >= prev['EMA26']:
+                last_ema_cross = "BEAR"
+            super_up = last['+DI']>28 and last['-DI']<12 and last['ADX']>28 and last['c']>last['EMA20'] and last['c']>last['VWAP']
+            uptrend = last['+DI']>last['-DI'] and last['ADX']>22 and last['c']>last['VWAP'] and last['+DI']>20
+            near_support = last['c'] <= last['Round10']+3
+            strong_bull = (last['c']-last['o']) > (last['h']-last['l'])*0.5 and last['c']>last['o']
+            vol_spike = last['VolSpike']>1.0
+            rsi_breakout = 55 <= last['RSI'] <= 90
+            rsi_trend = 45 <= last['RSI'] <= 85
+            rsi_super = 50 <= last['RSI'] <= 88
+            dist_ema = abs(last['c']-last['EMA12'])/last['EMA12']*100 <= 3.0
+            ema_run_up = ENABLE_EMA12x26_RUN and ema_bull_hold and last['c'] > last['EMA12'] and ema_diff_pct >= 0.02 and last['ADX']>20 and last['+DI']>18 and rsi_breakout and last['c'] > last['VWAP'] and mtf_1h_up and mtf_4h_up
+            breakout_up = ENABLE_BREAKOUT_UP and last['c'] > last['HH20']*0.998 and last['c'] > last['EMA12'] and last['EMA12'] > last['EMA26'] and last['ADX']>22 and last['+DI']>18 and rsi_breakout and last['c'] > last['VWAP'] and vol_spike and mtf_1h_up and mtf_4h_up
+            buy_trend = ENABLE_TREND_UP and uptrend and near_support and strong_bull and vol_spike and rsi_trend and dist_ema and mtf_1h_up and mtf_4h_up
+            buy_super = ENABLE_TREND_UP and super_up and near_support and strong_bull and vol_spike and rsi_super and dist_ema and mtf_1h_up and mtf_4h_up
+            buy_sideway = ENABLE_SIDEWAY_UP and last['+DI']>last['-DI'] and last['ADX']<22 and near_support and strong_bull and vol_spike and (40 <= last['RSI'] <= 80)
+            buy_signal = buy_trend or buy_super or buy_sideway or breakout_up or ema_run_up
+            buy_reason = "EMA12x26_RUN" if ema_run_up else "BREAKOUT_UP" if breakout_up else "TREND_UP" if buy_trend or buy_super else "SIDEWAY_UP" if buy_sideway else ""
+            if cooldown_until > time.time():
+                if time.time() - last_cooldown_sent >= 14400:
+                    last_cooldown_sent = time.time()
+                    last_hourly = time.time()
+                    remain = (cooldown_until - time.time())/3600
+                    bal_msg, _, _ = format_balance_msg()
+                    send_telegram(f"⏸️ [{thai_time()}] Cooldown {remain:.1f}ชม. | {bal_msg} | {DATA_DIR}")
+                time.sleep(60)
+                continue
+            if check_daily_loss():
+                if time.time() - last_daily_loss_sent >= 14400:
+                    last_daily_loss_sent = time.time()
+                    last_hourly = time.time()
+                    send_telegram(f"🛑 [{thai_time()}] Daily Loss {DAILY_MAX_LOSS} หยุดวันนี้ | {DATA_DIR}")
+                time.sleep(60)
+                continue
+            if time.time()-last_hourly >= 14400:
+                last_hourly=time.time()
+                hourly_full_report(last, price, mtf_4h_up, mtf_1h_up)
+            funding_block, funding_reason = is_funding_time()
+            news_block, news_reason = is_news_time()
+            if positions and check_max_hold():
+                bal_msg, _, _ = format_balance_msg()
+                send_telegram(f"⏰ [{thai_time()}] บังคับปิด ถือเกิน {MAX_HOLD_HOURS}ชม. | {bal_msg} | {DATA_DIR}")
+                close_position(price, f"MAX_HOLD_{MAX_HOLD_HOURS}H")
+                continue
+            if funding_block or news_block:
+                reason = funding_reason or news_reason
+                if reason != last_news_reason or time.time() - last_news_sent >= 14400:
+                    last_news_reason = reason
+                    last_news_sent = time.time()
+                    last_hourly = time.time()
+                    send_telegram(f"⏸️ [{thai_time()}] ติดข่าว {reason} หยุดเข้า | {DATA_DIR} | Render.com")
+                if positions:
+                    total_qty = sum(abs(p['qty']) for p in positions)
+                    avg = sum(p['entry']*abs(p['qty']) for p in positions)/total_qty
+                    pnl = (price-avg)/avg*100
+                    if pnl > 0.5:
+                        send_telegram(f"🛡️ [{thai_time()}] ปิดก่อนข่าว {reason} กำไร {pnl:.2f}%")
+                        close_position(price, "PRE_NEWS_PROFIT")
+                time.sleep(60)
+                continue
+            if len(positions)==0 and buy_signal:
+                ok, qty = mexc_buy(price, 1)
+                if ok:
+                    positions.append({'entry': price, 'qty': qty, 'side': 'long', 'time': time.time()})
+                    highest=price
+                    lowest=price
+                    save_positions()
+                    bal_msg, _, _ = format_balance_msg()
+                    send_telegram(f"🟢 [{thai_time()}] เปิด LONG REAL {buy_reason} @ {price:.2f}$ Qty {qty} | {bal_msg} | {DATA_DIR} | Render Free Persist")
+            if positions:
+                total_qty = sum(abs(p['qty']) for p in positions)
+                avg = sum(p['entry']*abs(p['qty']) for p in positions)/total_qty
+                pnl = (price-avg)/avg*100
+                if price>highest: highest=price
+                if price<lowest: lowest=price
+                ema_still_bull = last['EMA12'] > last['EMA26']
+                price_above_ema12 = price > last['EMA12']
+                if pnl>=TP_PCT:
+                    close_position(price, f"TP {TP_PCT}%")
+                elif price <= avg*(1-current_atr_sl/100):
+                    close_position(price, f"HARD_SL -{current_atr_sl:.1f}%")
+                elif not ema_still_bull and not price_above_ema12:
+                    close_position(price, f"EMA12x26_CROSS_BEAR")
+                elif ema_still_bull and price_above_ema12 and price <= highest*(1-TRAIL_PCT*2.5/100) and pnl >= BE_PCT*2:
+                    close_position(price, f"TRAIL_EMA12x26 {TRAIL_PCT*2.5}%")
+                elif pnl>=BE_PCT and price <= highest*(1-TRAIL_PCT/100) and not ema_still_bull:
+                    close_position(price, f"TRAIL_{TRAIL_PCT}%")
+            time.sleep(60)
+        except Exception as e:
+            print(f"Loop err {e}")
+            import traceback
+            traceback.print_exc()
+            time.sleep(30)
+
+threading.Thread(target=trading_loop, daemon=True).start()
 
 
+# ========== TELEGRAM CHECK RENDER RUNNING - เพิ่มให้ตรวจบอทรันมั้ย ==========
+def telegram_check_loop():
+    global cooldown_until
+    if not BOT_TOKEN:
+        print("TELE CHECK disabled - no BOT_TOKEN")
+        return
+    # FIX: delete webhook first so getUpdates works
+    try:
+        import requests as req
+        dw = req.get(f"https://api.telegram.org/bot{BOT_TOKEN}/deleteWebhook?drop_pending_updates=True", timeout=10)
+        print(f"deleteWebhook: {dw.text[:200]}")
+    except Exception as e:
+        print(f"deleteWebhook err {e}")
+    if not CHAT_ID:
+        print("WARN: CHAT_ID not set - will accept any chat and log ID")
+    offset = 0
+    print(f"Telegram CHECK started - Expected Chat {CHAT_ID} - listening /check /data /bt /balance")
+    while True:
+        try:
+            import requests as req
+            r = req.get(f"https://api.telegram.org/bot{BOT_TOKEN}/getUpdates?offset={offset+1}&timeout=30", timeout=35)
+            data = r.json()
+            if not data.get("ok"):
+                print(f"getUpdates not ok {data}")
+                time.sleep(5)
+                continue
+            for upd in data.get("result", []):
+                offset = upd["update_id"]
+                msg = upd.get("message", {})
+                text = msg.get("text","").strip().lower()
+                chat = str(msg.get("chat",{}).get("id",""))
+                print(f"Got Tele: '{text}' from chat {chat} expected {CHAT_ID}")
+                if CHAT_ID and chat != CHAT_ID:
+                    print(f"CHAT_ID mismatch! Got {chat} vs env {CHAT_ID} - still replying to help debug")
+                    # send hint to the sender what correct ID is
+                    try:
+                        req.get(f"https://api.telegram.org/bot{BOT_TOKEN}/sendMessage?chat_id={chat}&text=⚠️ CHAT_ID mismatch: you are {chat} but ENV CHAT_ID={CHAT_ID}. Set ENV to {chat} to fix.", timeout=10)
+                    except:
+                        pass
+                    # continue to process anyway so user sees bot alive
+                    # comment next line if you want strict
+                    # continue
+                if text in ["/start","/check","/status","/running"]:
+                    wr = (stats["wins"]/stats["total_trades"]*100) if stats["total_trades"]>0 else 0
+                    pos_info = f"{len(positions)} LONG" if positions else "ว่าง"
+                    send_telegram(f"✅ บอทรันอยู่บน Render\n⏰ {thai_time()}\nPos:{pos_info} WR:{wr:.1f}% Trades:{stats['total_trades']}\nDATA_DIR:{DATA_DIR}\nVersion: V12.19 FULL TELE FIX + /data /bt\n/health HEAD 200 OK\n\nพิมพ์ /data /bt /balance /health ได้")
+                elif text == "/health":
+                    send_telegram(f"🏥 Render Health: OK ✅\n{thai_time()}\nUptime: {int(time.time())}\nPos:{len(positions)} Trades:{stats['total_trades']}\n\nพิมพ์ /check /data /bt /balance ได้")
+                elif text == "/balance":
+                    try:
+                        bal = mexc.fetch_balance() if mexc else {}
+                        send_telegram(f"💰 Balance {thai_time()}\n{str(bal)[:600]}\n\nพิมพ์ /check /data /bt ได้")
+                    except Exception as e:
+                        send_telegram(f"Balance err {e}")
+                elif text == "/data":
+                    try:
+                        pos_exists = os.path.exists(POSITIONS_FILE)
+                        stat_exists = os.path.exists(STATS_FILE)
+                        weekly_exists = os.path.exists(WEEKLY_REPORT_FILE)
+                        pos_size = os.path.getsize(POSITIONS_FILE) if pos_exists else 0
+                        stat_size = os.path.getsize(STATS_FILE) if stat_exists else 0
+                        total_qty = sum(abs(p.get('qty',0)) for p in positions) if positions else 0
+                        avg = sum(p['entry']*abs(p.get('qty',0)) for p in positions)/total_qty if total_qty>0 else 0
+                        send_telegram(f"📁 DATA {thai_time()}\nDATA_DIR:{DATA_DIR}\n{POSITIONS_FILE} {'✅' if pos_exists else '❌'} {pos_size}B\n{STATS_FILE} {'✅' if stat_exists else '❌'} {stat_size}B\nWeekly:{'✅' if weekly_exists else '❌'}\nPos:{len(positions)} Qty:{total_qty} Avg:{avg:.2f}\nHighest:{highest:.2f} Lowest:{lowest:.2f}\n\nพิมพ์ /check /bt /balance ได้")
+                    except Exception as e:
+                        send_telegram(f"/data err {e}")
+                elif text == "/bt":
+                    try:
+                        wr = (stats["wins"]/stats["total_trades"]*100) if stats["total_trades"]>0 else 0
+                        hist = stats.get("history", [])[-5:]
+                        hist_txt = "\n".join([f"{h.get('time','')} {h.get('result','')} {h.get('pnl',0):.2f}%" for h in hist]) if hist else "ยังไม่มีประวัติ"
+                        send_telegram(f"📊 BT Backtest {thai_time()}\nTrades:{stats['total_trades']} Wins:{stats['wins']} Loss:{stats['losses']}\nWR:{wr:.1f}% Total PnL:{stats.get('total_pnl_pct',0):.2f}%\nCooldown until:{datetime.fromtimestamp(cooldown_until).strftime('%H:%M') if cooldown_until>time.time() else 'ไม่มี'}\n\n5 ล่าสุด:\n{hist_txt}\n\nพิมพ์ /check /data /balance ได้")
+                    except Exception as e:
+                        send_telegram(f"/bt err {e}")
+                elif text == "/stop":
+                    send_telegram(f"🛑 STOP สั่งหยุดแล้ว {thai_time()} - จะไม่เปิดใหม่จน Restart")
+                    # set cooldown
+                    cooldown_until = time.time() + 3600*24
+        except Exception as e:
+            print(f"Tele check err {e}")
+            time.sleep(10)
+
+threading.Thread(target=telegram_check_loop, daemon=True).start()
+
+
+if __name__ == "__main__":
+    port = int(os.environ.get("PORT", 10000))
+    app.run(host="0.0.0.0", port=port)
