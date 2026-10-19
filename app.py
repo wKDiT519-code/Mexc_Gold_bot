@@ -1,5 +1,5 @@
 """
-V12.15 NO-PANDAS TELE FIX + /data /bt RENDER FREE PERSIST - สำหรับคนคุ้นเคย Render.com ไม่อยากย้าย ไม่ต้องซื้อ Disk
+V12.17 NO-PANDAS TELE FIX + /data /bt RENDER FREE PERSIST - สำหรับคนคุ้นเคย Render.com ไม่อยากย้าย ไม่ต้องซื้อ Disk
 แก้ปัญหา Render Free ที่เคยเจอวันนี้:
 - Permission denied /mnt/data -> ใช้ ./data ได้ แต่หายตอน Restart
 - Position History ว่าง เพราะ positions=[] หาย บอทเลยเปิด LONG ซ้ำ 9 นาที
@@ -34,7 +34,7 @@ def get_data_dir():
     return fallback
 
 DATA_DIR = get_data_dir()
-print(f"V12.15 NO-PANDAS TELE FIX + /data /bt RENDER FREE PERSIST - DATA_DIR: {DATA_DIR} | Render.com Familiar Mode")
+print(f"V12.17 NO-PANDAS TELE FIX + /data /bt RENDER FREE PERSIST - DATA_DIR: {DATA_DIR} | Render.com Familiar Mode")
 
 MEXC_API_KEY = os.environ.get("MEXC_API_KEY", "").strip()
 MEXC_API_SECRET = os.environ.get("MEXC_API_SECRET", "").strip()
@@ -99,13 +99,19 @@ try:
             'enableRateLimit': True,
             'options': {'defaultType': 'swap'}
         })
-        mexc.load_markets()
+        try:
+            mexc.load_markets()
+        except Exception as le:
+            print(f"load_markets skip (Render IP 403) continue: {le}")
     else:
         mexc = None
 except Exception as e:
-    print(f"CCXT err {e}")
-    mexc_public = None
-    mexc = None
+    print(f"CCXT init err {e}")
+    # keep mexc if already created
+    if 'mexc_public' not in locals():
+        mexc_public = None
+    if 'mexc' not in locals():
+        mexc = None
 
 def thai_time():
     return datetime.now(pytz.timezone('Asia/Bangkok')).strftime("%d/%m/%Y %H:%M ICT")
@@ -268,7 +274,7 @@ def home():
     wr = (stats["wins"]/stats["total_trades"]*100) if stats["total_trades"]>0 else 0
     tier = "PAID /mnt/data" if DATA_DIR=="/mnt/data" else "FREE Render.com (Recover from MEXC)"
     pos_info = f"{len(positions)} LONG" if positions else "ว่าง"
-    return f"V12.15 NO-PANDAS TELE FIX + /data /bt RENDER FREE PERSIST LIVE | {tier} | {DATA_DIR} | Pos:{pos_info} | Trades:{stats['total_trades']} WR:{wr:.1f}% | EMA12x26 RUN"
+    return f"V12.17 NO-PANDAS TELE FIX + /data /bt RENDER FREE PERSIST LIVE | {tier} | {DATA_DIR} | Pos:{pos_info} | Trades:{stats['total_trades']} WR:{wr:.1f}% | EMA12x26 RUN"
 
 @app.route('/health', methods=['GET','HEAD'])
 def health():
@@ -280,7 +286,7 @@ def health():
 def stats_page():
     wr = (stats["wins"]/stats["total_trades"]*100) if stats["total_trades"]>0 else 0
     hist = "".join([f"{h['time']} {h['type']} {h['pnl']:+.2f}%<br>" for h in stats["history"][-30:]])
-    return f"<h2>V12.15 NO-PANDAS TELE FIX + /data /bt RENDER FREE PERSIST - 5X LONG ONLY - {DATA_DIR}</h2>Pos:{len(positions)} Trades:{stats['total_trades']} WR:{wr:.1f}%<br><hr>{hist}"
+    return f"<h2>V12.17 NO-PANDAS TELE FIX + /data /bt RENDER FREE PERSIST - 5X LONG ONLY - {DATA_DIR}</h2>Pos:{len(positions)} Trades:{stats['total_trades']} WR:{wr:.1f}%<br><hr>{hist}"
 
 def send_telegram(msg, chat_id=None):
     target = str(chat_id) if chat_id else CHAT_ID
