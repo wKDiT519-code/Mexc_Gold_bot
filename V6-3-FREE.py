@@ -261,7 +261,7 @@ def check_daily_loss():
 def home():
     if request.method == 'HEAD':
         return '', 200
-    # original home below
+
     wr = (stats["wins"]/stats["total_trades"]*100) if stats["total_trades"]>0 else 0
     tier = "PAID /mnt/data" if DATA_DIR=="/mnt/data" else "FREE Render.com (Recover from MEXC)"
     pos_info = f"{len(positions)} LONG" if positions else "ว่าง"
@@ -271,7 +271,7 @@ def home():
 def health():
     if request.method == 'HEAD':
         return '', 200
-    return jsonify({"status":"ok","version":"V12.9 RENDER FREE PERSIST FIXED FULL","data_dir":DATA_DIR,"positions":len(positions),"trades":stats["total_trades"],"mexc_sync":True,"fix":"HEAD+PORT+FULL"})
+    return jsonify({"status":"ok","version":"V12.9 FULL TELE CHECK","data_dir":DATA_DIR,"positions":len(positions),"trades":stats["total_trades"],"mexc_sync":True,"render":"RUNNING","uptime":time.time()})
 
 @app.route('/stats')
 def stats_page():
@@ -566,6 +566,53 @@ def trading_loop():
             time.sleep(30)
 
 threading.Thread(target=trading_loop, daemon=True).start()
+
+
+# ========== TELEGRAM CHECK RENDER RUNNING - เพิ่มให้ตรวจบอทรันมั้ย ==========
+def telegram_check_loop():
+    if not BOT_TOKEN or not CHAT_ID:
+        print("TELE CHECK disabled - no BOT_TOKEN/CHAT_ID")
+        return
+    offset = 0
+    print(f"Telegram CHECK started - Chat {CHAT_ID} - /status /check /health /balance /stop")
+    while True:
+        try:
+            import requests as req
+            r = req.get(f"https://api.telegram.org/bot{BOT_TOKEN}/getUpdates?offset={offset+1}&timeout=30", timeout=35)
+            data = r.json()
+            if not data.get("ok"):
+                time.sleep(5)
+                continue
+            for upd in data.get("result", []):
+                offset = upd["update_id"]
+                msg = upd.get("message", {})
+                text = msg.get("text","").strip().lower()
+                chat = str(msg.get("chat",{}).get("id",""))
+                if CHAT_ID and chat != CHAT_ID:
+                    continue
+                if text in ["/start","/check","/status","/running"]:
+                    wr = (stats["wins"]/stats["total_trades"]*100) if stats["total_trades"]>0 else 0
+                    pos_info = f"{len(positions)} LONG" if positions else "ว่าง"
+                    send_telegram(f"✅ บอทรันอยู่บน Render\n⏰ {thai_time()}\nPos:{pos_info} WR:{wr:.1f}% Trades:{stats['total_trades']}\nDATA_DIR:{DATA_DIR}\nVersion: V12.9 FULL TELE CHECK\n/health HEAD 200 OK")
+                elif text == "/health":
+                    send_telegram(f"🏥 Render Health: OK ✅\n{thai_time()}\nUptime: {int(time.time())}\nPos:{len(positions)} Trades:{stats['total_trades']}")
+                elif text == "/balance":
+                    try:
+                        bal = mexc.fetch_balance() if mexc else {}
+                        send_telegram(f"💰 Balance {thai_time()}\n{str(bal)[:500]}")
+                    except Exception as e:
+                        send_telegram(f"Balance err {e}")
+                elif text == "/stop":
+                    send_telegram(f"🛑 STOP สั่งหยุดแล้ว {thai_time()} - จะไม่เปิดใหม่จน Restart")
+                    # set cooldown
+                    global cooldown_until
+                    cooldown_until = time.time() + 3600*24
+        except Exception as e:
+            print(f"Tele check err {e}")
+            time.sleep(10)
+
+threading.Thread(target=telegram_check_loop, daemon=True).start()
+
 
 if __name__ == "__main__":
     port = int(os.environ.get("PORT", 10000))
