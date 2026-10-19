@@ -257,16 +257,21 @@ def check_daily_loss():
         last_daily_reset = now_day
     return daily_loss_count >= DAILY_MAX_LOSS
 
-@app.route('/')
+@app.route('/', methods=['GET','HEAD'])
 def home():
+    if request.method == 'HEAD':
+        return '', 200
+    # original home below
     wr = (stats["wins"]/stats["total_trades"]*100) if stats["total_trades"]>0 else 0
     tier = "PAID /mnt/data" if DATA_DIR=="/mnt/data" else "FREE Render.com (Recover from MEXC)"
     pos_info = f"{len(positions)} LONG" if positions else "ว่าง"
     return f"V12.9 RENDER FREE PERSIST LIVE | {tier} | {DATA_DIR} | Pos:{pos_info} | Trades:{stats['total_trades']} WR:{wr:.1f}% | EMA12x26 RUN"
 
-@app.route('/health')
+@app.route('/health', methods=['GET','HEAD'])
 def health():
-    return jsonify({"status":"ok","version":"V12.9 RENDER FREE PERSIST","data_dir":DATA_DIR,"positions":len(positions),"trades":stats["total_trades"],"mexc_sync":True})
+    if request.method == 'HEAD':
+        return '', 200
+    return jsonify({"status":"ok","version":"V12.9 RENDER FREE PERSIST FIXED FULL","data_dir":DATA_DIR,"positions":len(positions),"trades":stats["total_trades"],"mexc_sync":True,"fix":"HEAD+PORT+FULL"})
 
 @app.route('/stats')
 def stats_page():
