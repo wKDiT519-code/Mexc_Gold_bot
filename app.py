@@ -1,5 +1,5 @@
 """
-V12.12 FINAL TELE FIX + /data /bt RENDER FREE PERSIST - สำหรับคนคุ้นเคย Render.com ไม่อยากย้าย ไม่ต้องซื้อ Disk
+V12.13 FIXED TELE FIX + /data /bt RENDER FREE PERSIST - สำหรับคนคุ้นเคย Render.com ไม่อยากย้าย ไม่ต้องซื้อ Disk
 แก้ปัญหา Render Free ที่เคยเจอวันนี้:
 - Permission denied /mnt/data -> ใช้ ./data ได้ แต่หายตอน Restart
 - Position History ว่าง เพราะ positions=[] หาย บอทเลยเปิด LONG ซ้ำ 9 นาที
@@ -34,7 +34,7 @@ def get_data_dir():
     return fallback
 
 DATA_DIR = get_data_dir()
-print(f"V12.12 FINAL TELE FIX + /data /bt RENDER FREE PERSIST - DATA_DIR: {DATA_DIR} | Render.com Familiar Mode")
+print(f"V12.13 FIXED TELE FIX + /data /bt RENDER FREE PERSIST - DATA_DIR: {DATA_DIR} | Render.com Familiar Mode")
 
 MEXC_API_KEY = os.environ.get("MEXC_API_KEY", "").strip()
 MEXC_API_SECRET = os.environ.get("MEXC_API_SECRET", "").strip()
@@ -76,7 +76,7 @@ app = Flask(__name__)
 
 @app.route('/')
 def home():
-    return jsonify({"status":"live","version":"V12.12 FINAL","time":thai_time(),"data_dir":DATA_DIR,"positions":len(positions)}), 200
+    return jsonify({"status":"live","version":"V12.13 FIXED","time":thai_time(),"data_dir":DATA_DIR,"positions":len(positions)}), 200
 
 @app.route('/health')
 def health():
@@ -274,7 +274,7 @@ def home():
     wr = (stats["wins"]/stats["total_trades"]*100) if stats["total_trades"]>0 else 0
     tier = "PAID /mnt/data" if DATA_DIR=="/mnt/data" else "FREE Render.com (Recover from MEXC)"
     pos_info = f"{len(positions)} LONG" if positions else "ว่าง"
-    return f"V12.12 FINAL TELE FIX + /data /bt RENDER FREE PERSIST LIVE | {tier} | {DATA_DIR} | Pos:{pos_info} | Trades:{stats['total_trades']} WR:{wr:.1f}% | EMA12x26 RUN"
+    return f"V12.13 FIXED TELE FIX + /data /bt RENDER FREE PERSIST LIVE | {tier} | {DATA_DIR} | Pos:{pos_info} | Trades:{stats['total_trades']} WR:{wr:.1f}% | EMA12x26 RUN"
 
 @app.route('/health', methods=['GET','HEAD'])
 def health():
@@ -286,7 +286,7 @@ def health():
 def stats_page():
     wr = (stats["wins"]/stats["total_trades"]*100) if stats["total_trades"]>0 else 0
     hist = "".join([f"{h['time']} {h['type']} {h['pnl']:+.2f}%<br>" for h in stats["history"][-30:]])
-    return f"<h2>V12.12 FINAL TELE FIX + /data /bt RENDER FREE PERSIST - 5X LONG ONLY - {DATA_DIR}</h2>Pos:{len(positions)} Trades:{stats['total_trades']} WR:{wr:.1f}%<br><hr>{hist}"
+    return f"<h2>V12.13 FIXED TELE FIX + /data /bt RENDER FREE PERSIST - 5X LONG ONLY - {DATA_DIR}</h2>Pos:{len(positions)} Trades:{stats['total_trades']} WR:{wr:.1f}%<br><hr>{hist}"
 
 def send_telegram(msg, chat_id=None):
     target = str(chat_id) if chat_id else CHAT_ID
@@ -383,7 +383,7 @@ def format_balance_msg():
 def hourly_full_report(last, price, mtf_4h_up, mtf_1h_up):
     try:
         bal_msg, bal_detail, wr = format_balance_msg()
-        send_telegram(f"📊 [{thai_time()}] V12.12 FINAL TELE FIX + /data /bt RENDER FREE PERSIST {DATA_DIR} Price {price:.2f} {bal_msg} | Recover from MEXC ON")
+        send_telegram(f"📊 [{thai_time()}] V12.13 FIXED TELE FIX + /data /bt RENDER FREE PERSIST {DATA_DIR} Price {price:.2f} {bal_msg} | Recover from MEXC ON")
     except Exception as e:
         print(f"report err {e}")
 
@@ -449,13 +449,13 @@ def close_position(price, reason):
 def trading_loop():
     global positions, highest, lowest, last_hourly, cooldown_until, current_atr_sl, last_news_reason, last_news_sent, last_cooldown_sent, last_daily_loss_sent, last_ema_cross
     last_hourly = time.time()
-    print(f"V12.12 FINAL TELE FIX + /data /bt RENDER FREE PERSIST START {DATA_DIR}")
+    print(f"V12.13 FIXED TELE FIX + /data /bt RENDER FREE PERSIST START {DATA_DIR}")
     # Sync again on start
     if not positions:
         sync_positions_from_mexc()
     bal_msg, _, _ = format_balance_msg()
     pos_info = f"{len(positions)} LONG Avg {sum(p['entry']*p['qty'] for p in positions)/sum(p['qty'] for p in positions):.2f}" if positions else "ว่าง (Recovered from MEXC)"
-    send_telegram(f"🚀 V12.12 FINAL TELE FIX + /data /bt RENDER FREE PERSIST START {thai_time()} | {DATA_DIR} | {bal_msg}\nPos: {pos_info}\n5X Cross LONG ONLY | EMA12x26 RUN | แก้เปิดซ้ำ 9 นาที ด้วย Recover จาก MEXC\nCEO รายวัน + V12.9 รายสัปดาห์ บน Render.com")
+    send_telegram(f"🚀 V12.13 FIXED TELE FIX + /data /bt RENDER FREE PERSIST START {thai_time()} | {DATA_DIR} | {bal_msg}\nPos: {pos_info}\n5X Cross LONG ONLY | EMA12x26 RUN | แก้เปิดซ้ำ 9 นาที ด้วย Recover จาก MEXC\nCEO รายวัน + V12.9 รายสัปดาห์ บน Render.com")
     while True:
         try:
             df = get_klines_mexc(200, '15m')
@@ -584,6 +584,7 @@ threading.Thread(target=trading_loop, daemon=True).start()
 
 # ========== TELEGRAM CHECK RENDER RUNNING - เพิ่มให้ตรวจบอทรันมั้ย ==========
 def telegram_check_loop():
+    global cooldown_until
     if not BOT_TOKEN:
         print("TELE CHECK disabled - no BOT_TOKEN")
         return
@@ -626,7 +627,7 @@ def telegram_check_loop():
                 if text in ["/start","/check","/status","/running"]:
                     wr = (stats["wins"]/stats["total_trades"]*100) if stats["total_trades"]>0 else 0
                     pos_info = f"{len(positions)} LONG" if positions else "ว่าง"
-                    send_telegram(f"✅ บอทรันอยู่บน Render\n⏰ {thai_time()}\nPos:{pos_info} WR:{wr:.1f}% Trades:{stats['total_trades']}\nDATA_DIR:{DATA_DIR}\nVersion: V12.12 FINAL + /data /bt\n/health HEAD 200 OK\n\nพิมพ์ /data /bt /balance /health ได้", chat_id=chat)
+                    send_telegram(f"✅ บอทรันอยู่บน Render\n⏰ {thai_time()}\nPos:{pos_info} WR:{wr:.1f}% Trades:{stats['total_trades']}\nDATA_DIR:{DATA_DIR}\nVersion: V12.13 FIXED + /data /bt\n/health HEAD 200 OK\n\nพิมพ์ /data /bt /balance /health ได้", chat_id=chat)
                 elif text == "/health":
                     send_telegram(f"🏥 Render Health: OK ✅\n{thai_time()}\nUptime: {int(time.time())}\nPos:{len(positions)} Trades:{stats['total_trades']}\n\nพิมพ์ /check /data /bt /balance ได้", chat_id=chat)
                 elif text == "/balance":
@@ -665,7 +666,6 @@ def telegram_check_loop():
                 elif text == "/stop":
                     send_telegram(f"🛑 STOP สั่งหยุดแล้ว {thai_time()} - จะไม่เปิดใหม่จน Restart", chat_id=chat)
                     # set cooldown
-                    global cooldown_until
                     cooldown_until = time.time() + 3600*24
         except Exception as e:
             print(f"Tele check err {e}")
