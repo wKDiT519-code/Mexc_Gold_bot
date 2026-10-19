@@ -1,4 +1,5 @@
 flask==2.3.3
+gunicorn==21.2.0
 requests==2.31.0
 pytz==2023.3
 ccxt==4.1.64
