@@ -1,5 +1,5 @@
 """
-V12.22 OPEN/CLOSE MANUAL + NO-PANDAS NO-BLOCK 409+403 TELE FIX
+V12.23 OPEN/CLOSE MANUAL + NO-PANDAS NO-BLOCK 409+403 TELE FIX
 - เพิ่ม /open /close /buy /sell เปิดปิดออเดอร์ด้วยมือ
 - แก้ 403 /contract/detail Render IP blocked
 - แก้ 409 Conflict 2 instance
@@ -29,7 +29,7 @@ def get_data_dir():
     return fallback
 
 DATA_DIR = get_data_dir()
-print(f"V12.22 OPEN/CLOSE + NO-BLOCK - DATA_DIR: {DATA_DIR}")
+print(f"V12.23 OPEN/CLOSE + NO-BLOCK - DATA_DIR: {DATA_DIR}")
 
 MEXC_API_KEY = os.environ.get("MEXC_API_KEY", "").strip()
 MEXC_API_SECRET = os.environ.get("MEXC_API_SECRET", "").strip()
@@ -76,13 +76,13 @@ def home():
     wr = (stats["wins"]/stats["total_trades"]*100) if stats["total_trades"]>0 else 0
     tier = "PAID /mnt/data" if DATA_DIR=="/mnt/data" else "FREE Render.com (Recover from MEXC)"
     pos_info = f"{len(positions)} LONG" if positions else "ว่าง"
-    return f"V12.22 OPEN/CLOSE MANUAL + NO-BLOCK LIVE | {tier} | {DATA_DIR} | Pos:{pos_info} | Trades:{stats['total_trades']} WR:{wr:.1f}% | EMA12x26 RUN"
+    return f"V12.23 OPEN/CLOSE MANUAL + NO-BLOCK LIVE | {tier} | {DATA_DIR} | Pos:{pos_info} | Trades:{stats['total_trades']} WR:{wr:.1f}% | EMA12x26 RUN"
 
 @app.route('/health', methods=['GET','HEAD'])
 def health():
     if request.method == 'HEAD':
         return '', 200
-    return jsonify({"status":"ok","version":"V12.22 OPEN/CLOSE","data_dir":DATA_DIR,"positions":len(positions),"trades":stats["total_trades"],"mexc_sync":True,"render":"RUNNING","uptime":time.time()})
+    return jsonify({"status":"ok","version":"V12.23 OPEN/CLOSE","data_dir":DATA_DIR,"positions":len(positions),"trades":stats["total_trades"],"mexc_sync":True,"render":"RUNNING","uptime":time.time()})
 
 positions, highest, lowest, last_hourly = [], 0, 999999, time.time()
 stats = {"total_trades":0,"wins":0,"losses":0,"total_pnl_pct":0.0,"history":[]}
@@ -229,7 +229,7 @@ if not has_file:
 def stats_page():
     wr = (stats["wins"]/stats["total_trades"]*100) if stats["total_trades"]>0 else 0
     hist = "".join([f"{h['time']} {h['type']} {h['pnl']:+.2f}%<br>" for h in stats["history"][-30:]])
-    return f"<h2>V12.22 OPEN/CLOSE - 5X LONG ONLY - {DATA_DIR}</h2>Pos:{len(positions)} Trades:{stats['total_trades']} WR:{wr:.1f}%<br><hr>{hist}"
+    return f"<h2>V12.23 OPEN/CLOSE - 5X LONG ONLY - {DATA_DIR}</h2>Pos:{len(positions)} Trades:{stats['total_trades']} WR:{wr:.1f}%<br><hr>{hist}"
 
 def send_telegram(msg, chat_id=None):
     target = str(chat_id) if chat_id else CHAT_ID
@@ -264,47 +264,83 @@ def get_price_mexc():
         return None
 
 def get_klines_mexc(limit=200, timeframe='15m'):
-    # V12.22 NO-BLOCK
+    # V12.23 NO-BLOCK - ใช้ Binance เป็นหลักเพราะ Render ไม่บล็อค
+    # 1. ลอง ccxt MEXC ก่อน (bypass 403)
     try:
         if mexc_public:
             try:
                 if not getattr(mexc_public, 'markets', None):
-                    mexc_public.markets = {SYMBOL: {'id': SYMBOL_MEXC_ID, 'symbol': SYMBOL, 'swap': True, 'type': 'swap', 'contract': True}}
-                    mexc_public.markets_by_id = {SYMBOL_MEXC_ID: mexc_public.markets[SYMBOL], SYMBOL: mexc_public.markets[SYMBOL]}
-                    mexc_public.markets_by_id['PAXGUSDT'] = mexc_public.markets[SYMBOL]
+                    mexc_public.markets = {SYMBOL: {'id': SYMBOL_MEXC_ID, 'symbol': SYMBOL, 'swap': True, 'type': 'swap', 'contract': True, 'spot': False}}
+                    mexc_public.markets_by_id = {SYMBOL_MEXC_ID: mexc_public.markets[SYMBOL], SYMBOL: mexc_public.markets[SYMBOL], 'PAXGUSDT': mexc_public.markets[SYMBOL]}
             except:
                 pass
-            ohlcv = mexc_public.fetch_ohlcv(SYMBOL, timeframe=timeframe, limit=limit)
+            # ใช้ swap explicit
+            ohlcv = mexc_public.fetch_ohlcv(SYMBOL, timeframe=timeframe, limit=limit, params={'type': 'swap'})
+            if ohlcv and len(ohlcv) > 50:
+                print(f"Kline ccxt MEXC ok {len(ohlcv)}")
+                return ohlcv
+    except Exception as e:
+        print(f"Kline ccxt MEXC err {e} - try Binance fallback")
+
+    # 2. Fallback Binance (ไม่โดนบล็อคบน Render) - PAXGUSDT ราคาเดียวกัน
+    try:
+        tf_map = {'15m': '15m', '1h': '1h', '4h': '4h', '1d': '1d'}
+        bin_tf = tf_map.get(timeframe, '15m')
+        r = requests.get("https://api.binance.com/api/v3/klines", params={"symbol": SYMBOL, "interval": bin_tf, "limit": limit}, timeout=15)
+        if r.status_code == 200:
+            data = r.json()
+            ohlcv = []
+            for k in data:
+                # k: [open_time, open, high, low, close, vol, close_time, ...]
+                ohlcv.append([int(k[0]), float(k[1]), float(k[2]), float(k[3]), float(k[4]), float(k[5])])
+            print(f"Kline Binance fallback ok {len(ohlcv)} candles TF {timeframe}")
             return ohlcv
     except Exception as e:
-        print(f"Kline ccxt err {e} - try direct")
-    # fallback direct HTTP
+        print(f"Kline Binance err {e}")
+
+    # 3. Fallback MEXC spot api (api.mexc.com ไม่โดนบล็อคเท่า contract.mexc.com)
+    try:
+        tf_map2 = {'15m': '15m', '1h': '60m', '4h': '4h', '1d': '1d'}
+        mexc_tf = tf_map2.get(timeframe, '15m')
+        r = requests.get("https://api.mexc.com/api/v3/klines", params={"symbol": SYMBOL, "interval": mexc_tf, "limit": limit}, timeout=15)
+        if r.status_code == 200:
+            data = r.json()
+            ohlcv = []
+            for k in data:
+                ohlcv.append([int(k[0]), float(k[1]), float(k[2]), float(k[3]), float(k[4]), float(k[5])])
+            print(f"Kline MEXC spot fallback ok {len(ohlcv)}")
+            return ohlcv
+    except Exception as e:
+        print(f"Kline MEXC spot err {e}")
+
+    # 4. สุดท้ายลอง contract.mexc.com (อาจ 403)
     try:
         interval_map = {'15m': 'Min15', '1h': 'Min60', '4h': 'Hour4', '1d': 'Day1'}
         interval = interval_map.get(timeframe, 'Min15')
         r = requests.get(f"https://contract.mexc.com/api/v1/contract/kline/{SYMBOL_MEXC_ID}", params={"interval": interval}, timeout=15)
-        data = r.json()
-        d = data.get('data', {})
-        if isinstance(d, dict) and 'time' in d:
-            ohlcv = []
-            times = d.get('time', [])
-            opens = d.get('open', [])
-            highs = d.get('high', [])
-            lows = d.get('low', [])
-            closes = d.get('close', [])
-            vols = d.get('vol', [])
-            for i in range(len(times)):
-                try:
-                    ohlcv.append([int(times[i])*1000, float(opens[i]), float(highs[i]), float(lows[i]), float(closes[i]), float(vols[i])])
-                except:
-                    continue
-            ohlcv = ohlcv[-limit:]
-            print(f"Kline direct ok {len(ohlcv)} candles")
-            return ohlcv
-        elif isinstance(d, list):
-            return d
+        if r.status_code == 200 and r.text.strip().startswith('{'):
+            data = r.json()
+            d = data.get('data', {})
+            if isinstance(d, dict) and 'time' in d:
+                ohlcv = []
+                times = d.get('time', [])
+                opens = d.get('open', [])
+                highs = d.get('high', [])
+                lows = d.get('low', [])
+                closes = d.get('close', [])
+                vols = d.get('vol', [])
+                for i in range(len(times)):
+                    try:
+                        ohlcv.append([int(times[i])*1000, float(opens[i]), float(highs[i]), float(lows[i]), float(closes[i]), float(vols[i])])
+                    except:
+                        continue
+                ohlcv = ohlcv[-limit:]
+                print(f"Kline direct contract ok {len(ohlcv)}")
+                return ohlcv
     except Exception as e2:
         print(f"Kline direct err {e2}")
+
+    print("Kline all sources failed")
     return None
 
 def ema_series(prices, span):
@@ -603,12 +639,12 @@ def manual_close():
 def trading_loop():
     global positions, highest, lowest, last_hourly, cooldown_until, current_atr_sl, last_news_reason, last_news_sent, last_cooldown_sent, last_daily_loss_sent, last_ema_cross
     last_hourly = time.time()
-    print(f"V12.22 OPEN/CLOSE START {DATA_DIR}")
+    print(f"V12.23 OPEN/CLOSE START {DATA_DIR}")
     if not positions:
         sync_positions_from_mexc()
     bal_msg, _, _ = format_balance_msg()
     pos_info = f"{len(positions)} LONG" if positions else "ว่าง"
-    send_telegram(f"🚀 V12.22 OPEN/CLOSE START {thai_time()} | {DATA_DIR} | {bal_msg}\nPos: {pos_info}\n5X LONG ONLY | EMA12x26 RUN | /open /close ได้แล้ว")
+    send_telegram(f"🚀 V12.23 OPEN/CLOSE START {thai_time()} | {DATA_DIR} | {bal_msg}\nPos: {pos_info}\n5X LONG ONLY | EMA12x26 RUN | /open /close ได้แล้ว")
     while True:
         try:
             if manual_pause_until > time.time():
@@ -708,7 +744,7 @@ def telegram_check_loop():
     except Exception as e:
         print(f"deleteWebhook err {e}")
     offset = 0
-    print(f"Telegram CHECK + OPEN/CLOSE started - Expected Chat {CHAT_ID}")
+    print(f"Telegram CHECK + OPEN/CLOSE + BINANCE KLINE started - Expected Chat {CHAT_ID}")
     while True:
         try:
             r = requests.get(f"https://api.telegram.org/bot{BOT_TOKEN}/getUpdates?offset={offset+1}&timeout=30", timeout=35)
@@ -745,7 +781,7 @@ def telegram_check_loop():
                     total_qty = sum(abs(p['qty']) for p in positions) if positions else 0
                     avg = sum(p['entry']*abs(p['qty']) for p in positions)/total_qty if total_qty>0 else 0
                     price = get_price_mexc()
-                    send_telegram(f"✅ บอทรันอยู่บน Render\n⏰ {thai_time()}\nPos:{pos_info} Qty:{total_qty} Avg:{avg:.2f} Price:{price}\nWR:{wr:.1f}% Trades:{stats['total_trades']}\nDATA_DIR:{DATA_DIR}\nVersion: V12.22 OPEN/CLOSE\n\nคำสั่งใหม่:\n/open - เปิด LONG 0.001\n/open 0.002 - เปิด LONG 0.002\n/close - ปิดทั้งหมด\n/bt /data /balance /check", chat)
+                    send_telegram(f"✅ บอทรันอยู่บน Render\n⏰ {thai_time()}\nPos:{pos_info} Qty:{total_qty} Avg:{avg:.2f} Price:{price}\nWR:{wr:.1f}% Trades:{stats['total_trades']}\nDATA_DIR:{DATA_DIR}\nVersion: V12.23 OPEN/CLOSE\n\nคำสั่งใหม่:\n/open - เปิด LONG 0.001\n/open 0.002 - เปิด LONG 0.002\n/close - ปิดทั้งหมด\n/bt /data /balance /check", chat)
                 elif text.startswith("/open") or text.startswith("/buy") or text.startswith("/long"):
                     # parse qty
                     parts = text_raw.split()
