@@ -1,6 +1,5 @@
 flask==2.3.3
-python-telegram-bot==20.7
-ccxt==4.1.64
 requests==2.31.0
+pytz==2023.3
+ccxt==4.1.64
 python-dotenv==1.0.0
-gunicorn==21.2.0
