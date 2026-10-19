@@ -1,5 +1,5 @@
 """
-V12.19 FULL TELE FIX + /data /bt RENDER FREE PERSIST - สำหรับคนคุ้นเคย Render.com ไม่อยากย้าย ไม่ต้องซื้อ Disk
+V12.20 FULL NO-PANDAS NO-BLOCK TELE FIX + /data /bt RENDER FREE PERSIST - สำหรับคนคุ้นเคย Render.com ไม่อยากย้าย ไม่ต้องซื้อ Disk
 แก้ปัญหา Render Free ที่เคยเจอวันนี้:
 - Permission denied /mnt/data -> ใช้ ./data ได้ แต่หายตอน Restart
 - Position History ว่าง เพราะ positions=[] หาย บอทเลยเปิด LONG ซ้ำ 9 นาที
@@ -14,7 +14,6 @@ V12.9 NEW - RENDER FREE PERSIST:
 
 import requests, os, time, threading, json, math
 from flask import Flask, jsonify, request
-from flask import Flask, jsonify
 from datetime import datetime
 import pytz
 
@@ -35,7 +34,7 @@ def get_data_dir():
     return fallback
 
 DATA_DIR = get_data_dir()
-print(f"V12.19 FULL NO-PANDAS NO-BLOCK TELE FIX + /data /bt RENDER FREE PERSIST - DATA_DIR: {DATA_DIR} | Render.com Familiar Mode")
+print(f"V12.20 FULL NO-PANDAS NO-BLOCK TELE FIX + /data /bt RENDER FREE PERSIST - DATA_DIR: {DATA_DIR} | Render.com Familiar Mode")
 
 MEXC_API_KEY = os.environ.get("MEXC_API_KEY", "").strip()
 MEXC_API_SECRET = os.environ.get("MEXC_API_SECRET", "").strip()
@@ -82,13 +81,13 @@ def home():
     wr = (stats["wins"]/stats["total_trades"]*100) if stats["total_trades"]>0 else 0
     tier = "PAID /mnt/data" if DATA_DIR=="/mnt/data" else "FREE Render.com (Recover from MEXC)"
     pos_info = f"{len(positions)} LONG" if positions else "ว่าง"
-    return f"V12.19 NO-PANDAS NO-BLOCK TELE FIX + /data /bt RENDER FREE PERSIST LIVE | {tier} | {DATA_DIR} | Pos:{pos_info} | Trades:{stats['total_trades']} WR:{wr:.1f}% | EMA12x26 RUN"
+    return f"V12.20 NO-PANDAS NO-BLOCK TELE FIX LIVE | {tier} | {DATA_DIR} | Pos:{pos_info} | Trades:{stats['total_trades']} WR:{wr:.1f}% | EMA12x26 RUN"
 
 @app.route('/health', methods=['GET','HEAD'])
 def health():
     if request.method == 'HEAD':
         return '', 200
-    return jsonify({"status":"ok","version":"V12.19 NO-BLOCK TELE CHECK","data_dir":DATA_DIR,"positions":len(positions),"trades":stats["total_trades"],"mexc_sync":True,"render":"RUNNING","uptime":time.time()})
+    return jsonify({"status":"ok","version":"V12.20 NO-BLOCK TELE CHECK","data_dir":DATA_DIR,"positions":len(positions),"trades":stats["total_trades"],"mexc_sync":True,"render":"RUNNING","uptime":time.time()})
 
 positions, highest, lowest, last_hourly = [], 0, 999999, time.time()
 stats = {"total_trades":0,"wins":0,"losses":0,"total_pnl_pct":0.0,"history":[]}
@@ -169,7 +168,8 @@ def load_stats():
 
 def sync_positions_from_mexc():
     """
-    RENDER FREE PERSIST - V12.19 แก้ 403 Render IP blocked
+    RENDER FREE PERSIST - หัวใจสำคัญ
+    ดึงไม้ที่ค้างบน MEXC จริงๆ มาเลย กันเปิดซ้ำ 4,154/4,159 แบบเมื่อวาน
     """
     global positions, highest, lowest
     if not mexc:
@@ -177,7 +177,6 @@ def sync_positions_from_mexc():
         return False
     try:
         print(f"Syncing positions from MEXC {SYMBOL}...")
-        # Bypass load_markets that hits /contract/detail 403 on Render
         try:
             if not getattr(mexc, 'markets', None):
                 mexc.markets = {SYMBOL: {'id': SYMBOL_MEXC_ID, 'symbol': SYMBOL, 'swap': True, 'type': 'swap', 'contract': True}}
@@ -227,15 +226,12 @@ def sync_positions_from_mexc():
     except Exception as e:
         err_str = str(e)
         if "403" in err_str or "Access Denied" in err_str or "Forbidden" in err_str:
-            print(f"⚠️ MEXC blocks Render IP (403 Akamai) - cannot auto-recover now. Bot will run without duplicate open. If you have open 0.001 LONG on MEXC, it will be detected on next retry or after you upload positions.json to /data")
-            # Do not crash, continue with empty
+            print(f"⚠️ MEXC blocks Render IP (403 Akamai) - cannot auto-recover now. Bot will run without duplicate open.")
             return False
         print(f"sync from MEXC err {e}")
         import traceback
         traceback.print_exc()
         return False
-
-
 
 # Load sequence: file first, then MEXC if empty (Render Free)
 load_stats()
@@ -293,100 +289,13 @@ def check_daily_loss():
         last_daily_reset = now_day
     return daily_loss_count >= DAILY_MAX_LOSS
 
-@app.route('/', methods=['GET','HEAD'])
-def home():
-    if request.method == 'HEAD':
-        return '', 200
-
-    wr = (stats["wins"]/stats["total_trades"]*100) if stats["total_trades"]>0 else 0
-    tier = "PAID /mnt/data" if DATA_DIR=="/mnt/data" else "FREE Render.com (Recover from MEXC)"
-    pos_info = f"{len(positions)} LONG" if positions else "ว่าง"
-    return f"V12.19 FULL TELE FIX + /data /bt RENDER FREE PERSIST LIVE | {tier} | {DATA_DIR} | Pos:{pos_info} | Trades:{stats['total_trades']} WR:{wr:.1f}% | EMA12x26 RUN"
-
-@app.route('/health', methods=['GET','HEAD'])
-def health():
-    if request.method == 'HEAD':
-        return '', 200
-    return jsonify({"status":"ok","version":"V12.9 FULL TELE CHECK","data_dir":DATA_DIR,"positions":len(positions),"trades":stats["total_trades"],"mexc_sync":True,"render":"RUNNING","uptime":time.time()})
-
 @app.route('/stats')
 def stats_page():
     wr = (stats["wins"]/stats["total_trades"]*100) if stats["total_trades"]>0 else 0
     hist = "".join([f"{h['time']} {h['type']} {h['pnl']:+.2f}%<br>" for h in stats["history"][-30:]])
-    return f"<h2>V12.19 FULL TELE FIX + /data /bt RENDER FREE PERSIST - 5X LONG ONLY - {DATA_DIR}</h2>Pos:{len(positions)} Trades:{stats['total_trades']} WR:{wr:.1f}%<br><hr>{hist}"
+    return f"<h2>V12.20 FULL NO-PANDAS NO-BLOCK TELE FIX + /data /bt RENDER FREE PERSIST - 5X LONG ONLY - {DATA_DIR}</h2>Pos:{len(positions)} Trades:{stats['total_trades']} WR:{wr:.1f}%<br><hr>{hist}"
 
 
-
-def is_funding_time():
-    try:
-        utc = datetime.now(pytz.timezone('UTC'))
-        for fh in FUNDING_TIMES_UTC:
-            if utc.hour == fh and utc.minute >= (60 - AVOID_FUNDING_MINUTES):
-                return True, f"ใกล้ Funding {fh}:00 UTC"
-            if utc.hour == fh and utc.minute <= AVOID_FUNDING_MINUTES:
-                return True, f"หลัง Funding {fh}:00 UTC"
-            if fh == 0 and utc.hour == 23 and utc.minute >= 55:
-                return True, f"ใกล้ Funding 00:00 UTC"
-        return False, ""
-    except:
-        return False, ""
-
-def is_news_time():
-    if not NEWS_BLACKOUT:
-        return False, ""
-    try:
-        now_th = datetime.now(pytz.timezone('Asia/Bangkok'))
-        if now_th.weekday() == 4 and 1 <= now_th.day <= 7:
-            if 19 <= now_th.hour <= 20 and now_th.minute >= 30:
-                return True, f"NFP ศุกร์แรก {now_th.strftime('%d/%m')} 19:30 ICT"
-        if now_th.hour == 19 and now_th.minute >= 30:
-            if now_th.day in [14,15,16]:
-                return True, f"CPI/PPI HIGH {now_th.strftime('%d/%m')} 19:30 ICT"
-        if now_th.hour == 20 and now_th.minute <= 45:
-            if now_th.day in [14,15,16]:
-                return True, f"CPI/PPI HIGH {now_th.strftime('%d/%m')} 19:30-20:45 ICT"
-        return False, ""
-    except:
-        return False, ""
-
-def check_max_hold():
-    if not positions:
-        return False
-    try:
-        ft = positions[0].get('time', 0)
-        return (time.time()-ft)/3600 >= MAX_HOLD_HOURS if ft else False
-    except:
-        return False
-
-def check_daily_loss():
-    global daily_loss_count, last_daily_reset
-    now_day = datetime.now(pytz.timezone('Asia/Bangkok')).day
-    if now_day != last_daily_reset:
-        daily_loss_count = 0
-        last_daily_reset = now_day
-    return daily_loss_count >= DAILY_MAX_LOSS
-
-@app.route('/', methods=['GET','HEAD'])
-def home():
-    if request.method == 'HEAD':
-        return '', 200
-
-    wr = (stats["wins"]/stats["total_trades"]*100) if stats["total_trades"]>0 else 0
-    tier = "PAID /mnt/data" if DATA_DIR=="/mnt/data" else "FREE Render.com (Recover from MEXC)"
-    pos_info = f"{len(positions)} LONG" if positions else "ว่าง"
-    return f"V12.19 FULL TELE FIX + /data /bt RENDER FREE PERSIST LIVE | {tier} | {DATA_DIR} | Pos:{pos_info} | Trades:{stats['total_trades']} WR:{wr:.1f}% | EMA12x26 RUN"
-
-@app.route('/health', methods=['GET','HEAD'])
-def health():
-    if request.method == 'HEAD':
-        return '', 200
-    return jsonify({"status":"ok","version":"V12.9 FULL TELE CHECK","data_dir":DATA_DIR,"positions":len(positions),"trades":stats["total_trades"],"mexc_sync":True,"render":"RUNNING","uptime":time.time()})
-
-@app.route('/stats')
-def stats_page():
-    wr = (stats["wins"]/stats["total_trades"]*100) if stats["total_trades"]>0 else 0
-    hist = "".join([f"{h['time']} {h['type']} {h['pnl']:+.2f}%<br>" for h in stats["history"][-30:]])
-    return f"<h2>V12.19 FULL TELE FIX + /data /bt RENDER FREE PERSIST - 5X LONG ONLY - {DATA_DIR}</h2>Pos:{len(positions)} Trades:{stats['total_trades']} WR:{wr:.1f}%<br><hr>{hist}"
 
 def send_telegram(msg):
     if not BOT_TOKEN or not CHAT_ID:
@@ -478,7 +387,7 @@ def format_balance_msg():
 def hourly_full_report(last, price, mtf_4h_up, mtf_1h_up):
     try:
         bal_msg, bal_detail, wr = format_balance_msg()
-        send_telegram(f"📊 [{thai_time()}] V12.19 FULL TELE FIX + /data /bt RENDER FREE PERSIST {DATA_DIR} Price {price:.2f} {bal_msg} | Recover from MEXC ON")
+        send_telegram(f"📊 [{thai_time()}] V12.20 FULL NO-PANDAS NO-BLOCK TELE FIX + /data /bt RENDER FREE PERSIST {DATA_DIR} Price {price:.2f} {bal_msg} | Recover from MEXC ON")
     except Exception as e:
         print(f"report err {e}")
 
@@ -544,13 +453,13 @@ def close_position(price, reason):
 def trading_loop():
     global positions, highest, lowest, last_hourly, cooldown_until, current_atr_sl, last_news_reason, last_news_sent, last_cooldown_sent, last_daily_loss_sent, last_ema_cross
     last_hourly = time.time()
-    print(f"V12.19 FULL TELE FIX + /data /bt RENDER FREE PERSIST START {DATA_DIR}")
+    print(f"V12.20 FULL NO-PANDAS NO-BLOCK TELE FIX + /data /bt RENDER FREE PERSIST START {DATA_DIR}")
     # Sync again on start
     if not positions:
         sync_positions_from_mexc()
     bal_msg, _, _ = format_balance_msg()
     pos_info = f"{len(positions)} LONG Avg {sum(p['entry']*p['qty'] for p in positions)/sum(p['qty'] for p in positions):.2f}" if positions else "ว่าง (Recovered from MEXC)"
-    send_telegram(f"🚀 V12.19 FULL TELE FIX + /data /bt RENDER FREE PERSIST START {thai_time()} | {DATA_DIR} | {bal_msg}\nPos: {pos_info}\n5X Cross LONG ONLY | EMA12x26 RUN | แก้เปิดซ้ำ 9 นาที ด้วย Recover จาก MEXC\nCEO รายวัน + V12.9 รายสัปดาห์ บน Render.com")
+    send_telegram(f"🚀 V12.20 FULL NO-PANDAS NO-BLOCK TELE FIX + /data /bt RENDER FREE PERSIST START {thai_time()} | {DATA_DIR} | {bal_msg}\nPos: {pos_info}\n5X Cross LONG ONLY | EMA12x26 RUN | แก้เปิดซ้ำ 9 นาที ด้วย Recover จาก MEXC\nCEO รายวัน + V12.9 รายสัปดาห์ บน Render.com")
     while True:
         try:
             df = get_klines_mexc(200, '15m')
@@ -722,7 +631,7 @@ def telegram_check_loop():
                 if text in ["/start","/check","/status","/running"]:
                     wr = (stats["wins"]/stats["total_trades"]*100) if stats["total_trades"]>0 else 0
                     pos_info = f"{len(positions)} LONG" if positions else "ว่าง"
-                    send_telegram(f"✅ บอทรันอยู่บน Render\n⏰ {thai_time()}\nPos:{pos_info} WR:{wr:.1f}% Trades:{stats['total_trades']}\nDATA_DIR:{DATA_DIR}\nVersion: V12.19 FULL TELE FIX + /data /bt\n/health HEAD 200 OK\n\nพิมพ์ /data /bt /balance /health ได้")
+                    send_telegram(f"✅ บอทรันอยู่บน Render\n⏰ {thai_time()}\nPos:{pos_info} WR:{wr:.1f}% Trades:{stats['total_trades']}\nDATA_DIR:{DATA_DIR}\nVersion: V12.11 FULL TELE FIX + /data /bt\n/health HEAD 200 OK\n\nพิมพ์ /data /bt /balance /health ได้")
                 elif text == "/health":
                     send_telegram(f"🏥 Render Health: OK ✅\n{thai_time()}\nUptime: {int(time.time())}\nPos:{len(positions)} Trades:{stats['total_trades']}\n\nพิมพ์ /check /data /bt /balance ได้")
                 elif text == "/balance":
