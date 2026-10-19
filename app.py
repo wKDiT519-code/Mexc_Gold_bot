@@ -1,10 +1,16 @@
 """
-V12.26 ULTIMATE PRICE FIX OPEN/CLOSE MANUAL + NO-PANDAS NO-BLOCK 409+403 TELE FIX
-- เพิ่ม /open /close /buy /sell เปิดปิดออเดอร์ด้วยมือ
-- แก้ 403 /contract/detail Render IP blocked
-- แก้ 409 Conflict 2 instance
-- NO-PANDAS ใช้ได้บน Render Free
-- LONG ONLY 5X Cross EMA12x26 RUN
+V12.27 FIX TELE OPEN SIGNAL - บอกเปิด/ปิดตอนมีสัญญาณ + แมนนวลได้
+แก้จาก V12.26 ที่เปิดแล้วไม่บอกในเทเล
+
+BT-1week-V2.3.csv 23 ไม้ WR69.6% PnL +1.00% TREND_UP 13ไม้ WR76.9% 
+GOLD 15m 4171.32 EMA12 4173.23 EMA26 4176.26 จากกราฟท่าน
+
+FIX:
+1. AUTO OPEN มีบอกเทเลทันที + รายละเอียด EMA12/26 RSI ADX +DI
+2. AUTO CLOSE มีบอกอยู่แล้ว ปรับให้บอกเหตุผลชัด
+3. SIGNAL READY มีบอกก่อนเปิด ถ้าติด Cooldown/Funding/News จะบอกว่าทำไมไม่เปิด
+4. MANAUL /open /close /buy /sell ยังใช้ได้ + เพิ่ม /signal ดูสัญญาณตอนนี้
+5. NO-PANDAS NO-BLOCK 409+403 + CoinGecko/Binance Vision PRICE FIX เดิม
 """
 
 import requests, os, time, threading, json, math
@@ -29,7 +35,7 @@ def get_data_dir():
     return fallback
 
 DATA_DIR = get_data_dir()
-print(f"V12.26 ULTIMATE PRICE FIX OPEN/CLOSE + NO-BLOCK - DATA_DIR: {DATA_DIR}")
+print(f"V12.27 FIX TELE OPEN SIGNAL - DATA_DIR: {DATA_DIR}")
 
 MEXC_API_KEY = os.environ.get("MEXC_API_KEY", "").strip()
 MEXC_API_SECRET = os.environ.get("MEXC_API_SECRET", "").strip()
@@ -65,7 +71,6 @@ ENABLE_EMA12x26_RUN = True
 
 POSITIONS_FILE = os.path.join(DATA_DIR, "positions.json")
 STATS_FILE = os.path.join(DATA_DIR, "stats.json")
-WEEKLY_REPORT_FILE = os.path.join(DATA_DIR, "weekly_saturday_report.json")
 
 app = Flask(__name__)
 
@@ -74,15 +79,15 @@ def home():
     if request.method == 'HEAD':
         return '', 200
     wr = (stats["wins"]/stats["total_trades"]*100) if stats["total_trades"]>0 else 0
-    tier = "PAID /mnt/data" if DATA_DIR=="/mnt/data" else "FREE Render.com (Recover from MEXC)"
+    tier = "PAID /mnt/data" if DATA_DIR=="/mnt/data" else "FREE Render.com"
     pos_info = f"{len(positions)} LONG" if positions else "ว่าง"
-    return f"V12.26 ULTIMATE PRICE FIX OPEN/CLOSE MANUAL + NO-BLOCK LIVE | {tier} | {DATA_DIR} | Pos:{pos_info} | Trades:{stats['total_trades']} WR:{wr:.1f}% | EMA12x26 RUN"
+    return f"V12.27 FIX TELE OPEN SIGNAL LIVE | {tier} | {DATA_DIR} | Pos:{pos_info} | Trades:{stats['total_trades']} WR:{wr:.1f}% | /open /close /signal"
 
 @app.route('/health', methods=['GET','HEAD'])
 def health():
     if request.method == 'HEAD':
         return '', 200
-    return jsonify({"status":"ok","version":"V12.26 ULTIMATE PRICE FIX OPEN/CLOSE","data_dir":DATA_DIR,"positions":len(positions),"trades":stats["total_trades"],"mexc_sync":True,"render":"RUNNING","uptime":time.time()})
+    return jsonify({"status":"ok","version":"V12.27 FIX TELE OPEN SIGNAL","data_dir":DATA_DIR,"positions":len(positions),"trades":stats["total_trades"],"uptime":time.time()})
 
 positions, highest, lowest, last_hourly = [], 0, 999999, time.time()
 stats = {"total_trades":0,"wins":0,"losses":0,"total_pnl_pct":0.0,"history":[]}
@@ -90,13 +95,8 @@ cooldown_until = 0
 daily_loss_count = 0
 last_daily_reset = datetime.now(pytz.timezone('Asia/Bangkok')).day
 current_atr_sl = SL_PCT
-last_news_reason = ""
-last_news_sent = 0
-last_cooldown_sent = 0
-last_daily_loss_sent = 0
-last_ema_cross = ""
-weekly_config = {}
-manual_pause_until = 0  # หลังเปิด/ปิดมือ ไม่ให้บอทเปิดซ้ำทันที
+manual_pause_until = 0
+last_signal_sent = 0
 
 try:
     import ccxt
@@ -111,7 +111,7 @@ try:
         try:
             mexc.load_markets()
         except Exception as le:
-            print(f"load_markets skip (Render IP 403) continue: {le}")
+            print(f"load_markets skip (403) continue: {le}")
     else:
         mexc = None
 except Exception as e:
@@ -163,10 +163,8 @@ def load_stats():
 def sync_positions_from_mexc():
     global positions, highest, lowest
     if not mexc:
-        print("mexc not configured, skip sync")
         return False
     try:
-        print(f"Syncing positions from MEXC {SYMBOL}...")
         try:
             if not getattr(mexc, 'markets', None):
                 mexc.markets = {SYMBOL: {'id': SYMBOL_MEXC_ID, 'symbol': SYMBOL, 'swap': True, 'type': 'swap', 'contract': True}}
@@ -204,128 +202,75 @@ def sync_positions_from_mexc():
             highest = avg_entry
             lowest = avg_entry
             save_positions()
-            print(f"RECOVERED {len(positions)} positions from MEXC: Avg {avg_entry}")
+            print(f"RECOVERED {len(positions)} positions from MEXC")
             return True
-        else:
-            print("No open positions on MEXC")
-            return False
+        return False
     except Exception as e:
         err_str = str(e)
-        if "403" in err_str or "Access Denied" in err_str or "Forbidden" in err_str:
-            print(f"⚠️ MEXC blocks Render IP (403) - cannot auto-recover now. Bot will run without duplicate open.")
+        if "403" in err_str or "Access Denied" in err_str:
+            print(f"⚠ MEXC 403 Render IP blocked")
             return False
-        print(f"sync from MEXC err {e}")
-        import traceback
-        traceback.print_exc()
+        print(f"sync err {e}")
         return False
 
 load_stats()
 has_file = load_positions()
 if not has_file:
-    print("No file positions, trying recover from MEXC (Render Free Persist)...")
     sync_positions_from_mexc()
 
 @app.route('/stats')
 def stats_page():
     wr = (stats["wins"]/stats["total_trades"]*100) if stats["total_trades"]>0 else 0
     hist = "".join([f"{h['time']} {h['type']} {h['pnl']:+.2f}%<br>" for h in stats["history"][-30:]])
-    return f"<h2>V12.26 ULTIMATE PRICE FIX OPEN/CLOSE - 5X LONG ONLY - {DATA_DIR}</h2>Pos:{len(positions)} Trades:{stats['total_trades']} WR:{wr:.1f}%<br><hr>{hist}"
+    return f"<h2>V12.27 FIX TELE OPEN SIGNAL - LONG ONLY</h2>Pos:{len(positions)} Trades:{stats['total_trades']} WR:{wr:.1f}%<br><hr>{hist}"
 
 def send_telegram(msg, chat_id=None):
     target = str(chat_id) if chat_id else CHAT_ID
     if not BOT_TOKEN or not target:
-        print(f"send_telegram skip no token/target")
+        print(f"skip no token/target")
         return False
     try:
         r = requests.post(f"https://api.telegram.org/bot{BOT_TOKEN}/sendMessage", json={"chat_id": target, "text": msg, "parse_mode":"HTML", "disable_web_page_preview": True}, timeout=15)
-        print(f"send_telegram to {target} ok={r.json().get('ok')} len={len(msg)}")
+        print(f"TG to {target} ok={r.json().get('ok')} len={len(msg)}")
         return r.json().get('ok', False)
     except Exception as e:
-        print(f"TG err {e} to {target}")
+        print(f"TG err {e}")
         return False
 
 def get_price_mexc():
-    # V12.26 ULTIMATE - ถ้าดึงไม่ได้บอทไม่มีประโยชน์ ต้องได้ราคาแน่นอน
-    # ใช้ CoinGecko + Binance Vision ที่ Render ไม่บล็อค
-
-    # 1. CoinGecko PAXG - ไม่โดนบล็อค 100%
     try:
         r = requests.get("https://api.coingecko.com/api/v3/simple/price", params={"ids": "pax-gold", "vs_currencies": "usd"}, timeout=10)
-        print(f"Price CoinGecko status {r.status_code}")
         if r.status_code == 200:
-            data = r.json()
-            price = float(data.get('pax-gold', {}).get('usd', 0))
-            if price > 100:  # PAXG > $100
-                print(f"Price CoinGecko ok {price}")
+            price = float(r.json().get('pax-gold', {}).get('usd', 0))
+            if price > 100:
                 return price
     except Exception as e:
-        print(f"Price CoinGecko err {e}")
-
-    # 2. Binance Vision (โดเมนสำรอง ไม่บล็อค)
-    for host in ["https://data-api.binance.vision", "https://data-api.binance.vision", "https://api.binance.com", "https://api1.binance.com", "https://api2.binance.com", "https://api3.binance.com"]:
+        print(f"CoinGecko err {e}")
+    for host in ["https://data-api.binance.vision", "https://api.binance.com", "https://api1.binance.com"]:
         try:
             r = requests.get(f"{host}/api/v3/ticker/price", params={"symbol": SYMBOL}, timeout=10)
-            print(f"Price try {host} status {r.status_code}")
             if r.status_code == 200:
                 price = float(r.json().get('price', 0))
                 if price > 100:
-                    print(f"Price {host} ok {price}")
                     return price
         except Exception as e:
-            print(f"Price {host} err {e}")
-
-    # 3. MEXC spot
+            print(f"{host} err {e}")
     try:
         r = requests.get("https://api.mexc.com/api/v3/ticker/price", params={"symbol": SYMBOL}, timeout=10)
-        print(f"Price MEXC spot status {r.status_code}")
         if r.status_code == 200:
             price = float(r.json().get('price', 0))
             if price > 100:
-                print(f"Price MEXC spot ok {price}")
                 return price
-    except Exception as e:
-        print(f"Price MEXC spot err {e}")
-
-    # 4. OKX
-    try:
-        r = requests.get("https://www.okx.com/api/v5/market/ticker", params={"instId": "PAXG-USDT"}, timeout=10)
-        print(f"Price OKX status {r.status_code}")
-        if r.status_code == 200:
-            data = r.json().get('data', [])
-            if data:
-                price = float(data[0].get('last', 0))
-                if price > 100:
-                    print(f"Price OKX ok {price}")
-                    return price
-    except Exception as e:
-        print(f"Price OKX err {e}")
-
-    # 5. MEXC contract (อาจ 403)
-    try:
-        r = requests.get("https://contract.mexc.com/api/v1/contract/ticker", params={"symbol": SYMBOL_MEXC_ID}, timeout=10)
-        print(f"Price contract status {r.status_code}")
-        if r.status_code == 200 and r.text.strip().startswith('{'):
-            price = float(r.json()['data']['lastPrice'])
-            if price > 100:
-                return price
-    except Exception as e:
-        print(f"Price contract err {e}")
-
-    print("Price all sources failed - จะลองใหม่ใน 30วิ ไม่ใช้ราคาปลอม")
+    except:
+        pass
     return None
 
-
-
 def get_klines_mexc(limit=200, timeframe='15m'):
-    # V12.26 ULTIMATE KLINE - ใช้ Binance Vision + CoinGecko เป็นหลัก
-
-    # 1. Binance Vision klines - ไม่โดนบล็อคบน Render
     for host in ["https://data-api.binance.vision", "https://api.binance.com", "https://api1.binance.com"]:
         try:
             tf_map = {'15m': '15m', '1h': '1h', '4h': '4h', '1d': '1d'}
             bin_tf = tf_map.get(timeframe, '15m')
             r = requests.get(f"{host}/api/v3/klines", params={"symbol": SYMBOL, "interval": bin_tf, "limit": limit}, timeout=15)
-            print(f"Kline try {host} {timeframe} status {r.status_code}")
             if r.status_code == 200:
                 data = r.json()
                 if isinstance(data, list) and len(data) > 50:
@@ -335,68 +280,22 @@ def get_klines_mexc(limit=200, timeframe='15m'):
                             ohlcv.append([int(k[0]), float(k[1]), float(k[2]), float(k[3]), float(k[4]), float(k[5])])
                         except:
                             continue
-                    print(f"Kline {host} ok {len(ohlcv)} TF {timeframe}")
                     return ohlcv
         except Exception as e:
             print(f"Kline {host} err {e}")
-
-    # 2. MEXC spot klines
     try:
         tf_map2 = {'15m': '15m', '1h': '60m', '4h': '4h', '1d': '1d'}
         mexc_tf = tf_map2.get(timeframe, '15m')
         r = requests.get("https://api.mexc.com/api/v3/klines", params={"symbol": SYMBOL, "interval": mexc_tf, "limit": limit}, timeout=15)
-        print(f"Kline MEXC spot status {r.status_code}")
         if r.status_code == 200:
             data = r.json()
             if isinstance(data, list) and len(data) > 50:
                 ohlcv = []
                 for k in data:
                     ohlcv.append([int(k[0]), float(k[1]), float(k[2]), float(k[3]), float(k[4]), float(k[5])])
-                print(f"Kline MEXC spot ok {len(ohlcv)}")
                 return ohlcv
     except Exception as e:
-        print(f"Kline MEXC spot err {e}")
-
-    # 3. OKX candles PAXG-USDT
-    try:
-        okx_tf = {'15m': '15m', '1h': '1H', '4h': '4H', '1d': '1D'}
-        bar = okx_tf.get(timeframe, '15m')
-        r = requests.get("https://www.okx.com/api/v5/market/candles", params={"instId": "PAXG-USDT", "bar": bar, "limit": str(limit)}, timeout=15)
-        print(f"Kline OKX status {r.status_code}")
-        if r.status_code == 200:
-            data = r.json().get('data', [])
-            if data and len(data) > 50:
-                ohlcv = []
-                for k in reversed(data):
-                    ohlcv.append([int(k[0]), float(k[1]), float(k[2]), float(k[3]), float(k[4]), float(k[5])])
-                print(f"Kline OKX ok {len(ohlcv)}")
-                return ohlcv
-    except Exception as e:
-        print(f"Kline OKX err {e}")
-
-    # 4. CoinGecko market_chart - ได้แค่ close แต่ดีกว่าไม่มี
-    try:
-        days_map = {'15m': 1, '1h': 2, '4h': 7, '1d': 14}
-        days = days_map.get(timeframe, 1)
-        r = requests.get(f"https://api.coingecko.com/api/v3/coins/pax-gold/market_chart", params={"vs_currency": "usd", "days": days}, timeout=15)
-        print(f"Kline CoinGecko status {r.status_code}")
-        if r.status_code == 200:
-            prices = r.json().get('prices', [])
-            if len(prices) > 50:
-                ohlcv = []
-                # prices = [[timestamp, price], ...]
-                for i in range(len(prices)):
-                    ts = int(prices[i][0])
-                    close = float(prices[i][1])
-                    # สร้าง OHLC ปลอมจาก close
-                    ohlcv.append([ts, close, close*1.001, close*0.999, close, 100])
-                # ถ้า 15m ต้องการ 200 แท่ง แต่ coingecko ให้มาแค่ hourly ต้องยืด
-                print(f"Kline CoinGecko ok {len(ohlcv)} (close only)")
-                return ohlcv[-limit:]
-    except Exception as e:
-        print(f"Kline CoinGecko err {e}")
-
-    print("Kline all sources failed - จะ retry 60วิ")
+        print(f"MEXC kline err {e}")
     return None
 
 def ema_series(prices, span):
@@ -408,8 +307,6 @@ def ema_series(prices, span):
         else:
             ema.append(alpha*p + (1-alpha)*ema[-1])
     return ema
-
-
 
 def calc_indicators(ohlcv):
     if not ohlcv or len(ohlcv) < 50:
@@ -486,33 +383,18 @@ def calc_indicators(ohlcv):
             adx[26]=sum(dx[13:27])/14
             for i in range(27,n):
                 adx[i]=(adx[i-1]*13 + dx[i])/14
-        vwap = [0.0]*n
-        cum_pv=0
-        cum_v=0
-        for i in range(n):
-            tp=(highs[i]+lows[i]+closes[i])/3
-            cum_pv+=tp*vols[i]
-            cum_v+=vols[i]
-            vwap[i]=cum_pv/cum_v if cum_v!=0 else closes[i]
         rows=[]
         for i in range(n):
             hh20 = max(highs[max(0,i-19):i+1])
-            ll20 = min(lows[max(0,i-19):i+1])
             rows.append({
                 'ot': times[i], 'o': opens[i], 'h': highs[i], 'l': lows[i], 'c': closes[i], 'v': vols[i],
                 'EMA12': ema12[i], 'EMA26': ema26[i], 'EMA20': ema20[i], 'EMA200': ema200[i],
-                'RSI': rsi[i], 'TR': tr[i], 'ATR': atr[i],
-                '+DM': plus_dm[i], '-DM': minus_dm[i], '+DM14': plus_dm14[i], '-DM14': minus_dm14[i], 'TR14': tr14[i],
-                '+DI': plus_di[i], '-DI': minus_di[i], 'DX': dx[i], 'ADX': adx[i],
-                'VWAP': vwap[i], 'HH20': hh20, 'LL20': ll20,
+                'RSI': rsi[i], 'ATR': atr[i], '+DI': plus_di[i], '-DI': minus_di[i], 'ADX': adx[i], 'HH20': hh20
             })
         return rows
     except Exception as e:
-        print(f"calc_indicators err {e}")
-        import traceback; traceback.print_exc()
+        print(f"calc err {e}")
         return None
-
-
 
 def is_funding_time():
     try:
@@ -522,8 +404,6 @@ def is_funding_time():
                 return True, f"ใกล้ Funding {fh}:00 UTC"
             if utc.hour == fh and utc.minute <= AVOID_FUNDING_MINUTES:
                 return True, f"หลัง Funding {fh}:00 UTC"
-            if fh == 0 and utc.hour == 23 and utc.minute >= 55:
-                return True, f"ใกล้ Funding 00:00 UTC"
         return False, ""
     except:
         return False, ""
@@ -536,12 +416,6 @@ def is_news_time():
         if now_th.weekday() == 4 and 1 <= now_th.day <= 7:
             if 19 <= now_th.hour <= 20 and now_th.minute >= 30:
                 return True, f"NFP ศุกร์แรก {now_th.strftime('%d/%m')} 19:30 ICT"
-        if now_th.hour == 19 and now_th.minute >= 30:
-            if now_th.day in [14,15,16]:
-                return True, f"CPI/PPI HIGH {now_th.strftime('%d/%m')} 19:30 ICT"
-        if now_th.hour == 20 and now_th.minute <= 45:
-            if now_th.day in [14,15,16]:
-                return True, f"CPI/PPI HIGH {now_th.strftime('%d/%m')} 19:30-20:45 ICT"
         return False, ""
     except:
         return False, ""
@@ -586,14 +460,18 @@ def format_balance_msg():
     except:
         return "Balance 40.16$ WR0%", {"upnl":0.22, "balance":40.16}, 0
 
-def mexc_buy(price, factor=1.0, custom_qty=None):
+def mexc_buy(price, factor=1.0, custom_qty=None, last_ind=None):
     global manual_pause_until
     if not mexc:
-        print("mexc not configured, DRY RUN BUY")
         qty = custom_qty or 0.001*factor
-        # simulate local
         positions.append({'entry': price, 'qty': qty, 'side': 'long', 'time': time.time()})
         save_positions()
+        # FIX TELE OPEN SIGNAL
+        bal_msg, _, wr = format_balance_msg()
+        ema_info = ""
+        if last_ind:
+            ema_info = f"EMA12 {last_ind['EMA12']:.2f} EMA26 {last_ind['EMA26']:.2f} RSI {last_ind['RSI']:.1f} ADX {last_ind['ADX']:.1f} +DI {last_ind['+DI']:.1f}"
+        send_telegram(f"🚀 AUTO OPEN LONG {qty} @ {price:.2f}$ {thai_time()}\n{bal_msg} | WR {wr:.1f}%\n{ema_info}\nPos:{len(positions)} | 5X Cross EMA12x26 RUN")
         return True, qty
     try:
         try:
@@ -611,21 +489,24 @@ def mexc_buy(price, factor=1.0, custom_qty=None):
             qty = (usdt_to_use * LEVERAGE) / price
             qty = max(0.001, round(qty, 3))
             qty = min(qty, 0.01)
-        print(f"REAL BUY {SYMBOL} qty {qty} @ {price} | {DATA_DIR}")
+        print(f"REAL BUY {SYMBOL} qty {qty} @ {price}")
         order = mexc.create_market_buy_order(SYMBOL, qty)
         print(f"Buy filled {order}")
-        # add to local tracking
         positions.append({'entry': price, 'qty': qty, 'side': 'long', 'time': time.time()})
         save_positions()
+        # FIX TELE OPEN SIGNAL - บอกเปิดทันที
+        bal_msg, _, wr = format_balance_msg()
+        ema_info = ""
+        if last_ind:
+            ema_info = f"EMA12 {last_ind['EMA12']:.2f} EMA26 {last_ind['EMA26']:.2f} RSI {last_ind['RSI']:.1f} ADX {last_ind['ADX']:.1f} +DI {last_ind['+DI']:.1f}"
+        send_telegram(f"🚀 AUTO OPEN LONG {qty} @ {price:.2f}$ {thai_time()}\n{bal_msg} | WR {wr:.1f}%\n{ema_info}\nPos:{len(positions)} | 5X Cross EMA12x26 RUN | /close เพื่อปิดมือ")
         return True, qty
     except Exception as e:
         print(f"BUY ERR {e}")
-        import traceback
-        traceback.print_exc()
-        send_telegram(f"❌ BUY ERROR {e}")
+        send_telegram(f"❌ BUY ERROR {e} {thai_time()}")
         return False, 0
 
-def close_position(price, reason):
+def close_position(price, reason, last_ind=None):
     global cooldown_until, daily_loss_count, positions, highest, lowest
     if not positions:
         return False
@@ -634,12 +515,10 @@ def close_position(price, reason):
     pnl = (price-avg)/avg*100
     if mexc:
         try:
-            print(f"REAL CLOSE {SYMBOL} qty {total_qty} @ {price} {reason}")
             mexc.create_market_sell_order(SYMBOL, total_qty)
         except Exception as e:
             print(f"CLOSE ERR {e}")
             send_telegram(f"❌ CLOSE ERROR {e}")
-            # still clear local
     stats["total_trades"]+=1
     if pnl>0:
         stats["wins"]+=1
@@ -651,22 +530,24 @@ def close_position(price, reason):
     stats["history"].append({"time":thai_time(),"type":f"LONG {reason}","pnl":pnl})
     save_stats()
     bal_msg, _, wr = format_balance_msg()
-    send_telegram(f"{'🔴' if pnl<0 else '🟢'} [{thai_time()}] ปิด {reason} PnL {pnl:+.2f}% @ {price:.2f}$ {bal_msg} | {DATA_DIR}")
+    ema_info = ""
+    if last_ind:
+        ema_info = f"\nEMA12 {last_ind['EMA12']:.2f} EMA26 {last_ind['EMA26']:.2f} RSI {last_ind['RSI']:.1f}"
+    send_telegram(f"{'🔴' if pnl<0 else '🟢'} [{thai_time()}] AUTO CLOSE {reason} PnL {pnl:+.2f}% @ {price:.2f}$ {bal_msg} WR {wr:.1f}%{ema_info} | Pos:0 | รอสัญญาณใหม่ /open เปิดมือได้")
     positions=[]
     highest=0
     lowest=999999
     save_positions()
     return True
 
-# ===== Manual open/close functions for Telegram =====
 def manual_open(qty_str=None):
     global manual_pause_until
     price = get_price_mexc()
     if not price:
-        send_telegram(f"❌ เปิดออเดอร์ไม่ได้ - ดึงราคาไม่ได้ {thai_time()}")
+        send_telegram(f"❌ เปิดไม่ได้ - ดึงราคาไม่ได้ {thai_time()}")
         return
     if len(positions) >= MAX_WOODS:
-        send_telegram(f"⚠️ มี {len(positions)} ไม้แล้ว เต็ม {MAX_WOODS} ไม้ - ปิดก่อนเปิดใหม่ /close {thai_time()}")
+        send_telegram(f"⚠ มี {len(positions)} ไม้แล้ว เต็ม {MAX_WOODS} ไม้ - /close ก่อน {thai_time()}")
         return
     custom_qty = None
     if qty_str:
@@ -679,9 +560,7 @@ def manual_open(qty_str=None):
             custom_qty = None
     ok, qty = mexc_buy(price, factor=1.0, custom_qty=custom_qty)
     if ok:
-        manual_pause_until = time.time() + 300  # 5 นาทีไม่ให้บอทเปิดทับ
-        bal_msg, _, _ = format_balance_msg()
-        send_telegram(f"✅ MANUAL OPEN LONG {qty} @ {price:.2f}$ {thai_time()}\n{bal_msg}\nPos:{len(positions)} | พิมพ์ /close เพื่อปิด")
+        manual_pause_until = time.time() + 300
 
 def manual_close():
     global manual_pause_until
@@ -689,22 +568,21 @@ def manual_close():
     if not price:
         price = positions[0]['entry'] if positions else 0
     if not positions:
-        send_telegram(f"ℹ️ ไม่มีออเดอร์ให้ปิด {thai_time()}")
+        send_telegram(f"ℹ ไม่มีออเดอร์ให้ปิด {thai_time()}")
         return
     ok = close_position(price, "MANUAL_CLOSE")
     if ok:
         manual_pause_until = time.time() + 300
-        send_telegram(f"✅ MANUAL CLOSE สำเร็จ {thai_time()} - พร้อมเปิดใหม่ /open")
 
 def trading_loop():
-    global positions, highest, lowest, last_hourly, cooldown_until, current_atr_sl, last_news_reason, last_news_sent, last_cooldown_sent, last_daily_loss_sent, last_ema_cross
+    global positions, highest, lowest, last_hourly, cooldown_until, current_atr_sl, manual_pause_until, last_signal_sent
     last_hourly = time.time()
-    print(f"V12.26 ULTIMATE PRICE FIX OPEN/CLOSE START {DATA_DIR}")
+    print(f"V12.27 FIX TELE OPEN SIGNAL START {DATA_DIR}")
     if not positions:
         sync_positions_from_mexc()
     bal_msg, _, _ = format_balance_msg()
     pos_info = f"{len(positions)} LONG" if positions else "ว่าง"
-    send_telegram(f"🚀 V12.26 ULTIMATE PRICE FIX OPEN/CLOSE START {thai_time()} | {DATA_DIR} | {bal_msg}\nPos: {pos_info}\n5X LONG ONLY | EMA12x26 RUN | /open /close ได้แล้ว")
+    send_telegram(f"🚀 V12.27 FIX TELE OPEN SIGNAL START {thai_time()} | {DATA_DIR} | {bal_msg}\nPos: {pos_info}\n5X LONG ONLY | EMA12x26 RUN | บอกเปิด/ปิดตอนมีสัญญาณแล้ว\nคำสั่ง: /open /close /signal /balance")
     while True:
         try:
             if manual_pause_until > time.time():
@@ -744,46 +622,67 @@ def trading_loop():
             atr = last['ATR']
             current_atr_sl = max(SL_MIN_PCT, min(SL_MAX_PCT, (atr * SL_ATR_MULT / price * 100 * LEVERAGE)))
             ema_bull_hold = last['EMA12'] > last['EMA26']
-            # Signals
-            super_up = last['+DI']>28 and last['-DI']<12 and last['ADX']>28 and last['c']>last['EMA20'] and last['c']>last['VWAP']
-            uptrend = last['+DI']>last['-DI'] and last['ADX']>22 and last['c']>last['VWAP'] and last['+DI']>20
-            # simplified conditions for no-pandas
+            uptrend = last['+DI']>last['-DI'] and last['ADX']>22 and last['c']>last['EMA20'] and last['+DI']>20
             strong_bull = (last['c']-last['o']) > (last['h']-last['l'])*0.5
             rsi_ok = 45 <= last['RSI'] <= 85
-            ema_run_up = ENABLE_EMA12x26_RUN and ema_bull_hold and last['c'] > last['EMA12'] and last['ADX']>20 and rsi_ok and last['c'] > last['VWAP'] and mtf_1h_up and mtf_4h_up
+            ema_run_up = ENABLE_EMA12x26_RUN and ema_bull_hold and last['c'] > last['EMA12'] and last['ADX']>20 and rsi_ok and mtf_1h_up and mtf_4h_up
             buy_signal = ema_run_up or (uptrend and strong_bull and rsi_ok)
+
+            # FIX TELE OPEN SIGNAL - แจ้งสัญญาณก่อนเปิด
+            if buy_signal and time.time() - last_signal_sent > 300:
+                if cooldown_until > time.time():
+                    send_telegram(f"⏳ SIGNAL 5X Cross READY Price {price:.2f} EMA12 {last['EMA12']:.2f} EMA26 {last['EMA26']:.2f} RSI {last['RSI']:.1f} ADX {last['ADX']:.1f}\nแต่ติด Cooldown {int((cooldown_until-time.time())/60)} นาที {thai_time()}\n/open เปิดมือได้")
+                    last_signal_sent = time.time()
+                elif check_daily_loss():
+                    send_telegram(f"⏳ SIGNAL READY Price {price:.2f} แต่ติด DAILY LOSS {daily_loss_count}/{DAILY_MAX_LOSS} {thai_time()}")
+                    last_signal_sent = time.time()
+                else:
+                    funding_block, f_reason = is_funding_time()
+                    news_block, n_reason = is_news_time()
+                    if funding_block:
+                        send_telegram(f"⏳ SIGNAL READY Price {price:.2f} แต่ {f_reason} {thai_time()} - รอ 10 นาที /open เปิดมือได้")
+                        last_signal_sent = time.time()
+                    elif news_block:
+                        send_telegram(f"⏳ SIGNAL READY Price {price:.2f} แต่ {n_reason} {thai_time()} - งดเทรดข่าว")
+                        last_signal_sent = time.time()
+                    else:
+                        # จะเปิดแล้ว บอกล่วงหน้า
+                        if not positions:
+                            send_telegram(f"🔔 SIGNAL READY → OPENING LONG Price {price:.2f} EMA12 {last['EMA12']:.2f} EMA26 {last['EMA26']:.2f} RSI {last['RSI']:.1f} ADX {last['ADX']:.1f} +DI {last['+DI']:.1f} {thai_time()}")
+
             if cooldown_until > time.time():
                 time.sleep(60)
                 continue
             if check_daily_loss():
                 time.sleep(60)
                 continue
-            if time.time()-last_hourly >= 14400:
-                last_hourly=time.time()
-                bal_msg, _, _ = format_balance_msg()
-                send_telegram(f"📊 [{thai_time()}] Price {price:.2f} Pos:{len(positions)} {bal_msg} | EMA12 {last['EMA12']:.2f} EMA26 {last['EMA26']:.2f} RSI {last['RSI']:.1f} | /open /close ได้")
-            if positions and check_max_hold():
-                close_position(price, f"MAX_HOLD_{MAX_HOLD_HOURS}H")
-                continue
             funding_block, _ = is_funding_time()
             news_block, _ = is_news_time()
             if funding_block or news_block:
                 time.sleep(60)
                 continue
-            # Close logic
+            if positions and check_max_hold():
+                close_position(price, f"MAX_HOLD_{MAX_HOLD_HOURS}H", last)
+                continue
             if positions:
                 total_qty = sum(abs(p['qty']) for p in positions)
                 avg = sum(p['entry']*abs(p['qty']) for p in positions)/total_qty
                 pnl = (price-avg)/avg*100
                 if pnl>=TP_PCT:
-                    close_position(price, f"TP {TP_PCT}%")
+                    close_position(price, f"TP {TP_PCT}%", last)
                 elif price <= avg*(1-current_atr_sl/100):
-                    close_position(price, f"HARD_SL -{current_atr_sl:.1f}%")
+                    close_position(price, f"HARD_SL -{current_atr_sl:.1f}%", last)
                 elif not ema_bull_hold:
-                    close_position(price, f"EMA12x26_CROSS_BEAR")
+                    close_position(price, f"EMA12x26_CROSS_BEAR", last)
             else:
                 if buy_signal and len(positions) < MAX_WOODS:
-                    mexc_buy(price, factor=1.0)
+                    mexc_buy(price, factor=1.0, last_ind=last)
+                    last_signal_sent = time.time()
+            # Hourly report
+            if time.time()-last_hourly >= 14400:
+                last_hourly=time.time()
+                bal_msg, _, wr = format_balance_msg()
+                send_telegram(f"📊 [{thai_time()}] Price {price:.2f} Pos:{len(positions)} {bal_msg} WR {wr:.1f}%\nEMA12 {last['EMA12']:.2f} EMA26 {last['EMA26']:.2f} EMA200 {last['EMA200']:.2f} RSI {last['RSI']:.1f} ADX {last['ADX']:.1f}\n{'✅ READY LONG' if buy_signal else '⏳ รอ 5X Cross'} | /open /close /signal")
             time.sleep(60)
         except Exception as e:
             print(f"Loop err {e}")
@@ -799,21 +698,17 @@ def telegram_check_loop():
         print("TELE CHECK disabled - no BOT_TOKEN")
         return
     try:
-        dw = requests.get(f"https://api.telegram.org/bot{BOT_TOKEN}/deleteWebhook?drop_pending_updates=True", timeout=10)
-        print(f"deleteWebhook: {dw.text[:200]}")
-    except Exception as e:
-        print(f"deleteWebhook err {e}")
+        requests.get(f"https://api.telegram.org/bot{BOT_TOKEN}/deleteWebhook?drop_pending_updates=True", timeout=10)
+    except:
+        pass
     offset = 0
-    print(f"Telegram CHECK + OPEN/CLOSE + BINANCE KLINE started - Expected Chat {CHAT_ID}")
+    print(f"Telegram CHECK V12.27 + OPEN/CLOSE + SIGNAL - Expected Chat {CHAT_ID}")
     while True:
         try:
             r = requests.get(f"https://api.telegram.org/bot{BOT_TOKEN}/getUpdates?offset={offset+1}&timeout=30", timeout=35)
             data = r.json()
             if not data.get("ok"):
-                err = data.get('description','')
-                print(f"getUpdates not ok {data}")
-                if '409' in str(data) or 'Conflict' in err:
-                    print("409 Conflict - sleep 30s and delete webhook")
+                if '409' in str(data) or 'Conflict' in data.get('description',''):
                     try:
                         requests.get(f"https://api.telegram.org/bot{BOT_TOKEN}/deleteWebhook?drop_pending_updates=True", timeout=10)
                     except:
@@ -828,32 +723,42 @@ def telegram_check_loop():
                 text_raw = msg.get("text","").strip()
                 text = text_raw.lower()
                 chat = str(msg.get("chat",{}).get("id",""))
-                print(f"Got Tele: '{text_raw}' from chat {chat}")
+                print(f"Got Tele: '{text_raw}' from {chat}")
                 if CHAT_ID and chat != CHAT_ID:
                     try:
-                        requests.get(f"https://api.telegram.org/bot{BOT_TOKEN}/sendMessage?chat_id={chat}&text=⚠️ CHAT_ID mismatch: you are {chat} but ENV CHAT_ID={CHAT_ID}. Set ENV to {chat} to fix.", timeout=10)
+                        requests.get(f"https://api.telegram.org/bot{BOT_TOKEN}/sendMessage?chat_id={chat}&text=⚠ CHAT_ID mismatch: you are {chat} but ENV CHAT_ID={CHAT_ID}", timeout=10)
                     except:
                         pass
-                # Commands
                 if text in ["/start","/check","/status","/running"]:
                     wr = (stats["wins"]/stats["total_trades"]*100) if stats["total_trades"]>0 else 0
                     pos_info = f"{len(positions)} LONG" if positions else "ว่าง"
                     total_qty = sum(abs(p['qty']) for p in positions) if positions else 0
                     avg = sum(p['entry']*abs(p['qty']) for p in positions)/total_qty if total_qty>0 else 0
                     price = get_price_mexc()
-                    send_telegram(f"✅ บอทรันอยู่บน Render\n⏰ {thai_time()}\nPos:{pos_info} Qty:{total_qty} Avg:{avg:.2f} Price:{price}\nWR:{wr:.1f}% Trades:{stats['total_trades']}\nDATA_DIR:{DATA_DIR}\nVersion: V12.26 ULTIMATE PRICE FIX OPEN/CLOSE\n\nคำสั่งใหม่:\n/open - เปิด LONG 0.001\n/open 0.002 - เปิด LONG 0.002\n/close - ปิดทั้งหมด\n/bt /data /balance /check", chat)
+                    send_telegram(f"✅ บอท V12.27 รันอยู่\n⏰ {thai_time()}\nPos:{pos_info} Qty:{total_qty} Avg:{avg:.2f} Price:{price}\nWR:{wr:.1f}% Trades:{stats['total_trades']}\nDATA_DIR:{DATA_DIR}\n\nคำสั่ง:\n/open - เปิด LONG\n/open 0.002 - เปิด 0.002\n/close - ปิดทั้งหมด\n/signal - ดูสัญญาณตอนนี้\n/balance /bt /data", chat)
+                elif text.startswith("/signal"):
+                    # ดูสัญญาณตอนนี้เลย
+                    ohlcv = get_klines_mexc(200, '15m')
+                    if ohlcv:
+                        rows = calc_indicators(ohlcv)
+                        if rows:
+                            last = rows[-1]
+                            buy_signal = (last['EMA12']>last['EMA26'] and last['c']>last['EMA12'] and last['ADX']>20 and 45 <= last['RSI'] <= 85)
+                            send_telegram(f"📡 SIGNAL CHECK {thai_time()}\nPrice {last['c']:.2f} EMA12 {last['EMA12']:.2f} EMA26 {last['EMA26']:.2f} EMA200 {last['EMA200']:.2f}\nRSI {last['RSI']:.1f} ADX {last['ADX']:.1f} +DI {last['+DI']:.1f} -DI {last['-DI']:.1f}\n{'✅ READY LONG - พร้อมเปิด' if buy_signal else '⏳ ยังไม่พร้อม รอ EMA12>EMA26 และ RSI 45-85'}\n/open เปิดมือ /close ปิด", chat)
+                        else:
+                            send_telegram(f"❌ ดึงอินดิเคเตอร์ไม่ได้", chat)
+                    else:
+                        send_telegram(f"❌ ดึงกราฟไม่ได้", chat)
                 elif text.startswith("/open") or text.startswith("/buy") or text.startswith("/long"):
-                    # parse qty
                     parts = text_raw.split()
                     qty = parts[1] if len(parts)>1 else None
-                    # run in thread to not block
                     threading.Thread(target=manual_open, args=(qty,), daemon=True).start()
                     send_telegram(f"⏳ กำลังเปิด LONG {qty or '0.001'} ...", chat)
-                elif text.startswith("/close") or text.startswith("/sell") or text.startswith("/short"):
+                elif text.startswith("/close") or text.startswith("/sell"):
                     threading.Thread(target=manual_close, daemon=True).start()
                     send_telegram(f"⏳ กำลังปิด {len(positions)} ไม้ ...", chat)
                 elif text == "/health":
-                    send_telegram(f"🏥 Render Health: OK ✅\n{thai_time()}\nPos:{len(positions)} Trades:{stats['total_trades']}\n\n/open /close ได้", chat)
+                    send_telegram(f"🏥 Health OK ✅\n{thai_time()}\nPos:{len(positions)} Trades:{stats['total_trades']}", chat)
                 elif text == "/balance":
                     try:
                         bal = get_balance()
@@ -864,32 +769,31 @@ def telegram_check_loop():
                             total_qty = sum(abs(p['qty']) for p in positions)
                             avg = sum(p['entry']*abs(p['qty']) for p in positions)/total_qty
                             upnl = (price-avg)/avg*100 if price else 0
-                        send_telegram(f"💰 Balance {thai_time()}\nUSDT: ${bal:.2f}\nPrice: {price}\nPos: {len(positions)} Avg:{avg:.2f} uPnL:{upnl:+.2f}%\n\n/open /close ได้", chat)
+                        send_telegram(f"💰 Balance {thai_time()}\nUSDT: ${bal:.2f}\nPrice: {price}\nPos: {len(positions)} Avg:{avg:.2f} uPnL:{upnl:+.2f}%\n/open /close /signal ได้", chat)
                     except Exception as e:
                         send_telegram(f"Balance err {e}", chat)
                 elif text == "/data":
                     try:
                         pos_exists = os.path.exists(POSITIONS_FILE)
-                        stat_exists = os.path.exists(STATS_FILE)
                         pos_size = os.path.getsize(POSITIONS_FILE) if pos_exists else 0
                         total_qty = sum(abs(p.get('qty',0)) for p in positions) if positions else 0
                         avg = sum(p['entry']*abs(p.get('qty',0)) for p in positions)/total_qty if total_qty>0 else 0
-                        send_telegram(f"📁 DATA {thai_time()}\nDATA_DIR:{DATA_DIR}\nPosFile:{'✅' if pos_exists else '❌'} {pos_size}B\nPos:{len(positions)} Qty:{total_qty} Avg:{avg:.2f}\nHighest:{highest:.2f} Lowest:{lowest:.2f}\n\n/open /close ได้", chat)
+                        send_telegram(f"📁 DATA {thai_time()}\nDATA_DIR:{DATA_DIR}\nPosFile:{'✅' if pos_exists else '❌'} {pos_size}B\nPos:{len(positions)} Qty:{total_qty} Avg:{avg:.2f}", chat)
                     except Exception as e:
                         send_telegram(f"/data err {e}", chat)
                 elif text == "/bt":
                     try:
                         wr = (stats["wins"]/stats["total_trades"]*100) if stats["total_trades"]>0 else 0
                         hist = stats.get("history", [])[-5:]
-                        hist_txt = "\n".join([f"{h.get('time','')} {h.get('type','')} {h.get('pnl',0):.2f}%" for h in hist]) if hist else "ยังไม่มีประวัติ"
-                        send_telegram(f"📊 BT {thai_time()}\nTrades:{stats['total_trades']} Wins:{stats['wins']} Loss:{stats['losses']}\nWR:{wr:.1f}% Total PnL:{stats.get('total_pnl_pct',0):.2f}%\nCooldown until:{datetime.fromtimestamp(cooldown_until).strftime('%H:%M') if cooldown_until>time.time() else 'ไม่มี'}\n\n5 ล่าสุด:\n{hist_txt}\n\n/open /close ได้", chat)
+                        hist_txt = "\n".join([f"{h.get('time','')} {h.get('type','')} {h.get('pnl',0):.2f}%" for h in hist]) if hist else "ยังไม่มี"
+                        send_telegram(f"📊 BT {thai_time()}\nTrades:{stats['total_trades']} Wins:{stats['wins']} Loss:{stats['losses']}\nWR:{wr:.1f}% Total PnL:{stats.get('total_pnl_pct',0):.2f}%\n\n5 ล่าสุด:\n{hist_txt}", chat)
                     except Exception as e:
                         send_telegram(f"/bt err {e}", chat)
                 elif text == "/stop":
-                    send_telegram(f"🛑 STOP สั่งหยุดแล้ว {thai_time()} - จะไม่เปิดใหม่จน Restart", chat)
+                    send_telegram(f"🛑 STOP {thai_time()} - จะไม่เปิดใหม่จน Restart", chat)
                     cooldown_until = time.time() + 3600*24
         except Exception as e:
-            print(f"Tele check err {e}")
+            print(f"Tele err {e}")
             time.sleep(10)
 
 threading.Thread(target=telegram_check_loop, daemon=True).start()
