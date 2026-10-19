@@ -74,13 +74,7 @@ WEEKLY_REPORT_FILE = os.path.join(DATA_DIR, "weekly_saturday_report.json")
 
 app = Flask(__name__)
 
-@app.route('/')
-def home():
-    return jsonify({"status":"live","version":"V12.15 NO-PANDAS","time":thai_time(),"data_dir":DATA_DIR,"positions":len(positions)}), 200
-
-@app.route('/health')
-def health():
-    return "OK HEAD 200", 200
+# routes defined later with HEAD support
 
 positions, highest, lowest, last_hourly = [], 0, 999999, time.time()
 stats = {"total_trades":0,"wins":0,"losses":0,"total_pnl_pct":0.0,"history":[]}
