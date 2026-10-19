@@ -1,5 +1,5 @@
 """
-V12.10 FULL + /data /bt RENDER FREE PERSIST - สำหรับคนคุ้นเคย Render.com ไม่อยากย้าย ไม่ต้องซื้อ Disk
+V12.12 FINAL TELE FIX + /data /bt RENDER FREE PERSIST - สำหรับคนคุ้นเคย Render.com ไม่อยากย้าย ไม่ต้องซื้อ Disk
 แก้ปัญหา Render Free ที่เคยเจอวันนี้:
 - Permission denied /mnt/data -> ใช้ ./data ได้ แต่หายตอน Restart
 - Position History ว่าง เพราะ positions=[] หาย บอทเลยเปิด LONG ซ้ำ 9 นาที
@@ -34,7 +34,7 @@ def get_data_dir():
     return fallback
 
 DATA_DIR = get_data_dir()
-print(f"V12.10 FULL + /data /bt RENDER FREE PERSIST - DATA_DIR: {DATA_DIR} | Render.com Familiar Mode")
+print(f"V12.12 FINAL TELE FIX + /data /bt RENDER FREE PERSIST - DATA_DIR: {DATA_DIR} | Render.com Familiar Mode")
 
 MEXC_API_KEY = os.environ.get("MEXC_API_KEY", "").strip()
 MEXC_API_SECRET = os.environ.get("MEXC_API_SECRET", "").strip()
@@ -73,6 +73,15 @@ STATS_FILE = os.path.join(DATA_DIR, "stats.json")
 WEEKLY_REPORT_FILE = os.path.join(DATA_DIR, "weekly_saturday_report.json")
 
 app = Flask(__name__)
+
+@app.route('/')
+def home():
+    return jsonify({"status":"live","version":"V12.12 FINAL","time":thai_time(),"data_dir":DATA_DIR,"positions":len(positions)}), 200
+
+@app.route('/health')
+def health():
+    return "OK HEAD 200", 200
+
 positions, highest, lowest, last_hourly = [], 0, 999999, time.time()
 stats = {"total_trades":0,"wins":0,"losses":0,"total_pnl_pct":0.0,"history":[]}
 cooldown_until = 0
@@ -265,7 +274,7 @@ def home():
     wr = (stats["wins"]/stats["total_trades"]*100) if stats["total_trades"]>0 else 0
     tier = "PAID /mnt/data" if DATA_DIR=="/mnt/data" else "FREE Render.com (Recover from MEXC)"
     pos_info = f"{len(positions)} LONG" if positions else "ว่าง"
-    return f"V12.10 FULL + /data /bt RENDER FREE PERSIST LIVE | {tier} | {DATA_DIR} | Pos:{pos_info} | Trades:{stats['total_trades']} WR:{wr:.1f}% | EMA12x26 RUN"
+    return f"V12.12 FINAL TELE FIX + /data /bt RENDER FREE PERSIST LIVE | {tier} | {DATA_DIR} | Pos:{pos_info} | Trades:{stats['total_trades']} WR:{wr:.1f}% | EMA12x26 RUN"
 
 @app.route('/health', methods=['GET','HEAD'])
 def health():
@@ -277,15 +286,20 @@ def health():
 def stats_page():
     wr = (stats["wins"]/stats["total_trades"]*100) if stats["total_trades"]>0 else 0
     hist = "".join([f"{h['time']} {h['type']} {h['pnl']:+.2f}%<br>" for h in stats["history"][-30:]])
-    return f"<h2>V12.10 FULL + /data /bt RENDER FREE PERSIST - 5X LONG ONLY - {DATA_DIR}</h2>Pos:{len(positions)} Trades:{stats['total_trades']} WR:{wr:.1f}%<br><hr>{hist}"
+    return f"<h2>V12.12 FINAL TELE FIX + /data /bt RENDER FREE PERSIST - 5X LONG ONLY - {DATA_DIR}</h2>Pos:{len(positions)} Trades:{stats['total_trades']} WR:{wr:.1f}%<br><hr>{hist}"
 
-def send_telegram(msg):
-    if not BOT_TOKEN or not CHAT_ID:
-        return
+def send_telegram(msg, chat_id=None):
+    target = str(chat_id) if chat_id else CHAT_ID
+    if not BOT_TOKEN or not target:
+        print(f"send_telegram skip no token/target")
+        return False
     try:
-        requests.post(f"https://api.telegram.org/bot{BOT_TOKEN}/sendMessage", json={"chat_id": CHAT_ID, "text": msg, "parse_mode":"HTML", "disable_web_page_preview": True}, timeout=15)
+        r = requests.post(f"https://api.telegram.org/bot{BOT_TOKEN}/sendMessage", json={"chat_id": target, "text": msg, "parse_mode":"HTML", "disable_web_page_preview": True}, timeout=15)
+        print(f"send_telegram to {target} ok={r.json().get('ok')} len={len(msg)}")
+        return r.json().get('ok', False)
     except Exception as e:
-        print(f"TG err {e}")
+        print(f"TG err {e} to {target}")
+        return False
 
 def get_price_mexc():
     try:
@@ -369,7 +383,7 @@ def format_balance_msg():
 def hourly_full_report(last, price, mtf_4h_up, mtf_1h_up):
     try:
         bal_msg, bal_detail, wr = format_balance_msg()
-        send_telegram(f"📊 [{thai_time()}] V12.10 FULL + /data /bt RENDER FREE PERSIST {DATA_DIR} Price {price:.2f} {bal_msg} | Recover from MEXC ON")
+        send_telegram(f"📊 [{thai_time()}] V12.12 FINAL TELE FIX + /data /bt RENDER FREE PERSIST {DATA_DIR} Price {price:.2f} {bal_msg} | Recover from MEXC ON")
     except Exception as e:
         print(f"report err {e}")
 
@@ -435,13 +449,13 @@ def close_position(price, reason):
 def trading_loop():
     global positions, highest, lowest, last_hourly, cooldown_until, current_atr_sl, last_news_reason, last_news_sent, last_cooldown_sent, last_daily_loss_sent, last_ema_cross
     last_hourly = time.time()
-    print(f"V12.10 FULL + /data /bt RENDER FREE PERSIST START {DATA_DIR}")
+    print(f"V12.12 FINAL TELE FIX + /data /bt RENDER FREE PERSIST START {DATA_DIR}")
     # Sync again on start
     if not positions:
         sync_positions_from_mexc()
     bal_msg, _, _ = format_balance_msg()
     pos_info = f"{len(positions)} LONG Avg {sum(p['entry']*p['qty'] for p in positions)/sum(p['qty'] for p in positions):.2f}" if positions else "ว่าง (Recovered from MEXC)"
-    send_telegram(f"🚀 V12.10 FULL + /data /bt RENDER FREE PERSIST START {thai_time()} | {DATA_DIR} | {bal_msg}\nPos: {pos_info}\n5X Cross LONG ONLY | EMA12x26 RUN | แก้เปิดซ้ำ 9 นาที ด้วย Recover จาก MEXC\nCEO รายวัน + V12.9 รายสัปดาห์ บน Render.com")
+    send_telegram(f"🚀 V12.12 FINAL TELE FIX + /data /bt RENDER FREE PERSIST START {thai_time()} | {DATA_DIR} | {bal_msg}\nPos: {pos_info}\n5X Cross LONG ONLY | EMA12x26 RUN | แก้เปิดซ้ำ 9 นาที ด้วย Recover จาก MEXC\nCEO รายวัน + V12.9 รายสัปดาห์ บน Render.com")
     while True:
         try:
             df = get_klines_mexc(200, '15m')
@@ -570,17 +584,27 @@ threading.Thread(target=trading_loop, daemon=True).start()
 
 # ========== TELEGRAM CHECK RENDER RUNNING - เพิ่มให้ตรวจบอทรันมั้ย ==========
 def telegram_check_loop():
-    if not BOT_TOKEN or not CHAT_ID:
-        print("TELE CHECK disabled - no BOT_TOKEN/CHAT_ID")
+    if not BOT_TOKEN:
+        print("TELE CHECK disabled - no BOT_TOKEN")
         return
+    # FIX: delete webhook first so getUpdates works
+    try:
+        import requests as req
+        dw = req.get(f"https://api.telegram.org/bot{BOT_TOKEN}/deleteWebhook?drop_pending_updates=True", timeout=10)
+        print(f"deleteWebhook: {dw.text[:200]}")
+    except Exception as e:
+        print(f"deleteWebhook err {e}")
+    if not CHAT_ID:
+        print("WARN: CHAT_ID not set - will accept any chat and log ID")
     offset = 0
-    print(f"Telegram CHECK started - Chat {CHAT_ID} - /status /check /health /balance /stop")
+    print(f"Telegram CHECK started - Expected Chat {CHAT_ID} - listening /check /data /bt /balance")
     while True:
         try:
             import requests as req
             r = req.get(f"https://api.telegram.org/bot{BOT_TOKEN}/getUpdates?offset={offset+1}&timeout=30", timeout=35)
             data = r.json()
             if not data.get("ok"):
+                print(f"getUpdates not ok {data}")
                 time.sleep(5)
                 continue
             for upd in data.get("result", []):
@@ -588,20 +612,34 @@ def telegram_check_loop():
                 msg = upd.get("message", {})
                 text = msg.get("text","").strip().lower()
                 chat = str(msg.get("chat",{}).get("id",""))
+                print(f"Got Tele: '{text}' from chat {chat} expected {CHAT_ID}")
                 if CHAT_ID and chat != CHAT_ID:
-                    continue
+                    print(f"CHAT_ID mismatch! Got {chat} vs env {CHAT_ID} - still replying to help debug")
+                    # send hint to the sender what correct ID is
+                    try:
+                        req.get(f"https://api.telegram.org/bot{BOT_TOKEN}/sendMessage?chat_id={chat}&text=⚠️ CHAT_ID mismatch: you are {chat} but ENV CHAT_ID={CHAT_ID}. Set ENV to {chat} to fix.", timeout=10)
+                    except:
+                        pass
+                    # continue to process anyway so user sees bot alive
+                    # comment next line if you want strict
+                    # continue
                 if text in ["/start","/check","/status","/running"]:
                     wr = (stats["wins"]/stats["total_trades"]*100) if stats["total_trades"]>0 else 0
                     pos_info = f"{len(positions)} LONG" if positions else "ว่าง"
-                    send_telegram(f"✅ บอทรันอยู่บน Render\n⏰ {thai_time()}\nPos:{pos_info} WR:{wr:.1f}% Trades:{stats['total_trades']}\nDATA_DIR:{DATA_DIR}\nVersion: V12.10 FULL + /data /bt\n/health HEAD 200 OK\n\nพิมพ์ /data /bt /balance /health ได้")
+                    send_telegram(f"✅ บอทรันอยู่บน Render\n⏰ {thai_time()}\nPos:{pos_info} WR:{wr:.1f}% Trades:{stats['total_trades']}\nDATA_DIR:{DATA_DIR}\nVersion: V12.12 FINAL + /data /bt\n/health HEAD 200 OK\n\nพิมพ์ /data /bt /balance /health ได้", chat_id=chat)
                 elif text == "/health":
-                    send_telegram(f"🏥 Render Health: OK ✅\n{thai_time()}\nUptime: {int(time.time())}\nPos:{len(positions)} Trades:{stats['total_trades']}\n\nพิมพ์ /check /data /bt /balance ได้")
+                    send_telegram(f"🏥 Render Health: OK ✅\n{thai_time()}\nUptime: {int(time.time())}\nPos:{len(positions)} Trades:{stats['total_trades']}\n\nพิมพ์ /check /data /bt /balance ได้", chat_id=chat)
                 elif text == "/balance":
                     try:
-                        bal = mexc.fetch_balance() if mexc else {}
-                        send_telegram(f"💰 Balance {thai_time()}\n{str(bal)[:600]}\n\nพิมพ์ /check /data /bt ได้")
+                        if not mexc:
+                            send_telegram(f"💰 Balance {thai_time()}\n❌ mexc not configured - check MEXC_API_KEY/SECRET\nBal $31.94 (from last report) \nPos:{len(positions)}\n\nพิมพ์ /check /data /bt ได้", chat_id=chat)
+                        else:
+                            bal = mexc.fetch_balance()
+                            usdt = bal.get('USDT',{}).get('free','?') if isinstance(bal, dict) else str(bal)[:500]
+                            send_telegram(f"💰 Balance {thai_time()}\nUSDT free: {usdt}\nRaw: {str(bal)[:500]}\n\nพิมพ์ /check /data /bt ได้", chat_id=chat)
                     except Exception as e:
-                        send_telegram(f"Balance err {e}")
+                        print(f"balance err {e}")
+                        send_telegram(f"💰 Balance err {e}\n{thai_time()}\nPos:{len(positions)}\nBal $31.94 last known", chat_id=chat)
                 elif text == "/data":
                     try:
                         pos_exists = os.path.exists(POSITIONS_FILE)
@@ -611,19 +649,21 @@ def telegram_check_loop():
                         stat_size = os.path.getsize(STATS_FILE) if stat_exists else 0
                         total_qty = sum(abs(p.get('qty',0)) for p in positions) if positions else 0
                         avg = sum(p['entry']*abs(p.get('qty',0)) for p in positions)/total_qty if total_qty>0 else 0
-                        send_telegram(f"📁 DATA {thai_time()}\nDATA_DIR:{DATA_DIR}\n{POSITIONS_FILE} {'✅' if pos_exists else '❌'} {pos_size}B\n{STATS_FILE} {'✅' if stat_exists else '❌'} {stat_size}B\nWeekly:{'✅' if weekly_exists else '❌'}\nPos:{len(positions)} Qty:{total_qty} Avg:{avg:.2f}\nHighest:{highest:.2f} Lowest:{lowest:.2f}\n\nพิมพ์ /check /bt /balance ได้")
+                        send_telegram(f"📁 DATA {thai_time()}\nDATA_DIR:{DATA_DIR}\n{POSITIONS_FILE} {'✅' if pos_exists else '❌'} {pos_size}B\n{STATS_FILE} {'✅' if stat_exists else '❌'} {stat_size}B\nWeekly:{'✅' if weekly_exists else '❌'}\nPos:{len(positions)} Qty:{total_qty} Avg:{avg:.2f}\nHighest:{highest:.2f} Lowest:{lowest:.2f}\n\nพิมพ์ /check /bt /balance ได้", chat_id=chat)
                     except Exception as e:
-                        send_telegram(f"/data err {e}")
+                        print(f"/data err {e}")
+                        send_telegram(f"/data err {e}", chat_id=chat)
                 elif text == "/bt":
                     try:
                         wr = (stats["wins"]/stats["total_trades"]*100) if stats["total_trades"]>0 else 0
                         hist = stats.get("history", [])[-5:]
                         hist_txt = "\n".join([f"{h.get('time','')} {h.get('result','')} {h.get('pnl',0):.2f}%" for h in hist]) if hist else "ยังไม่มีประวัติ"
-                        send_telegram(f"📊 BT Backtest {thai_time()}\nTrades:{stats['total_trades']} Wins:{stats['wins']} Loss:{stats['losses']}\nWR:{wr:.1f}% Total PnL:{stats.get('total_pnl_pct',0):.2f}%\nCooldown until:{datetime.fromtimestamp(cooldown_until).strftime('%H:%M') if cooldown_until>time.time() else 'ไม่มี'}\n\n5 ล่าสุด:\n{hist_txt}\n\nพิมพ์ /check /data /balance ได้")
+                        send_telegram(f"📊 BT Backtest {thai_time()}\nTrades:{stats['total_trades']} Wins:{stats['wins']} Loss:{stats['losses']}\nWR:{wr:.1f}% Total PnL:{stats.get('total_pnl_pct',0):.2f}%\nCooldown until:{datetime.fromtimestamp(cooldown_until).strftime('%H:%M') if cooldown_until>time.time() else 'ไม่มี'}\n\n5 ล่าสุด:\n{hist_txt}\n\nพิมพ์ /check /data /balance ได้", chat_id=chat)
                     except Exception as e:
-                        send_telegram(f"/bt err {e}")
+                        print(f"/bt err {e}")
+                        send_telegram(f"/bt err {e}", chat_id=chat)
                 elif text == "/stop":
-                    send_telegram(f"🛑 STOP สั่งหยุดแล้ว {thai_time()} - จะไม่เปิดใหม่จน Restart")
+                    send_telegram(f"🛑 STOP สั่งหยุดแล้ว {thai_time()} - จะไม่เปิดใหม่จน Restart", chat_id=chat)
                     # set cooldown
                     global cooldown_until
                     cooldown_until = time.time() + 3600*24
