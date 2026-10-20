@@ -1,16 +1,22 @@
 """
-V13.7 FINAL - QTY 0.0005 BTC = 5 CONT = $40 Notional Margin $5 แนะนำสุดสำหรับทุน $40
-ตามที่คอนเฟิร์ม: 0.0005 BTC = 5 CONT = $40 Notional Margin $5 → แนะนำสุด ✅
+V13.8 FIX DRY RUN -> REAL MODE - แก้จากรูป 20:31 DRY RUN LONG 0.0005 BTC
 
-ทุน $40:
-- 0.001 BTC = 10 CONT = $81 Notional Margin $10 = 25% พอร์ต เสี่ยงไป
-- 0.0005 BTC = 5 CONT = $40 Notional Margin $5 = 12.5% พอร์ต พอดีสุด ✅
-- 0.0001 BTC = 1 CONT = $8 Notional Margin $1 = 2.5% พอร์ต ปลอดภัยสุดแต่กำไรน้อย
+รูปบอก:
+Bal $40.00 Price 81500
+TRY LONG 0.0005 BTC = 5 CONT Margin $5.09 Bal $40.00
+✅ DRY RUN LONG 0.0005 BTC=5 CONT @ 81500 Margin $5.09
 
-Risk V13.7:
-SL 3.4% PnL = ราคาวิ่ง 0.425% = ขาดทุน $0.17/ไม้ = 0.4% พอร์ต
-TP 18% PnL = ราคาวิ่ง 2.25% = กำไร $0.91/ไม้ = 2.2% พอร์ต
-Ratio 5.3:1 แบบ Trader 85% WR
+สาเหตุ DRY RUN:
+- mexc == None หรือ API KEY ว่าง หรือ load_markets fail
+- get_balance_fast() return 40.0 fallback ไม่ใช่ balance จริง
+
+FIX V13.8:
+- เช็ค API KEY มีไหม โชว์ใน /check
+- log load_markets error ชัดเจน
+- ถ้า API KEY ไม่มี บอกวิธีใส่ใน Render ENV
+- ถ้า 700007 บอก No Restriction
+- แยก Bal จริง vs Bal fallback
+- บังคับ REAL MODE ถ้ามี KEY
 """
 
 import requests, os, time, threading, json
@@ -26,33 +32,66 @@ MEXC_API_SECRET = os.environ.get("MEXC_API_SECRET","").strip()
 BOT_TOKEN = os.environ.get("BOT_TOKEN","").strip()
 CHAT_ID = os.environ.get("CHAT_ID","").strip()
 
+print(f"V13.8 ENV CHECK: API_KEY len={len(MEXC_API_KEY)} SECRET len={len(MEXC_API_SECRET)} BOT len={len(BOT_TOKEN)} CHAT {CHAT_ID}")
+
 SYMBOL_CCXT = "BTC/USDT:USDT"
-CONTRACT_SIZE = 0.0001  # 1 CONT = 0.0001 BTC
-DEFAULT_BTC = 0.0005    # แนะนำสุด
-DEFAULT_CONT = 5        # 0.0005 / 0.0001 = 5
+CONTRACT_SIZE = 0.0001
+DEFAULT_BTC = 0.0005
+DEFAULT_CONT = 5
 LEVERAGE = 8
-TP_PCT = 18.0
-SL_PCT = 3.4
 
 POSITIONS_FILE = os.path.join(DATA_DIR, "positions.json")
 STATS_FILE = os.path.join(DATA_DIR, "stats.json")
 
 app = Flask(__name__)
 @app.route('/')
-def home(): return f"V13.7 FINAL 0.0005 BTC=5 CONT $40 Margin $5 RECOMMENDED"
+def home(): return f"V13.8 FIX DRY RUN -> REAL | API_KEY {len(MEXC_API_KEY)} chars | {DEFAULT_BTC} BTC={DEFAULT_CONT} CONT"
 @app.route('/health')
-def health(): return jsonify({"status":"ok","version":"V13.7","default_btc":DEFAULT_BTC,"default_cont":DEFAULT_CONT,"margin":"$5"})
+def health(): return jsonify({"status":"ok","version":"V13.8","api_key_len":len(MEXC_API_KEY),"has_secret":len(MEXC_API_SECRET)>0})
 
 positions=[]; stats={"total_trades":0,"wins":0,"losses":0,"total_pnl_pct":0.0,"history":[]}
+mexc=None
+mexc_error=""
 
 try:
     import ccxt
-    mexc = ccxt.mexc({'apiKey': MEXC_API_KEY, 'secret': MEXC_API_SECRET, 'enableRateLimit': True, 'options': {'defaultType': 'swap'}})
-    mexc.load_markets()
-except:
-    mexc=None
+    if not MEXC_API_KEY or not MEXC_API_SECRET:
+        mexc_error = f"API KEY ว่าง! KEY len {len(MEXC_API_KEY)} SECRET len {len(MEXC_API_SECRET)} ต้องใส่ใน Render ENV"
+        print(mexc_error)
+        mexc=None
+    else:
+        mexc = ccxt.mexc({
+            'apiKey': MEXC_API_KEY,
+            'secret': MEXC_API_SECRET,
+            'enableRateLimit': True,
+            'options': {'defaultType': 'swap'}
+        })
+        mexc.load_markets()
+        print(f"✅ MEXC markets loaded {len(mexc.markets)}")
+        # test balance
+        bal = mexc.fetch_balance()
+        usdt = bal.get('USDT',{}).get('free',0)
+        print(f"✅ MEXC Balance test USDT free {usdt}")
+        mexc_error = f"OK Balance ${usdt}"
+except Exception as e:
+    mexc_error = f"CCXT FAIL {str(e)[:300]}"
+    print(mexc_error)
+    # ถ้า load_markets fail แต่มี KEY ก็ยังลองสร้าง mexc แบบไม่ load markets
+    try:
+        if MEXC_API_KEY and MEXC_API_SECRET:
+            import ccxt
+            mexc = ccxt.mexc({
+                'apiKey': MEXC_API_KEY,
+                'secret': MEXC_API_SECRET,
+                'enableRateLimit': True,
+                'options': {'defaultType': 'swap'}
+            })
+            print("Created mexc without load_markets for fallback")
+    except:
+        mexc=None
 
 def thai_time(): return datetime.now(pytz.timezone('Asia/Bangkok')).strftime("%d/%m/%Y %H:%M ICT")
+
 def save_positions():
     try:
         with open(POSITIONS_FILE,'w',encoding='utf-8') as f: json.dump({"positions":positions}, f)
@@ -77,11 +116,16 @@ load_stats(); load_positions()
 
 def send_telegram(msg, chat_id=None):
     target=str(chat_id) if chat_id else CHAT_ID
-    if not BOT_TOKEN or not target: return False
+    if not BOT_TOKEN or not target: 
+        print(f"TELE NO TOKEN {msg[:100]}")
+        return False
     try:
-        requests.post(f"https://api.telegram.org/bot{BOT_TOKEN}/sendMessage", json={"chat_id":target,"text":msg,"parse_mode":"HTML","disable_web_page_preview":True}, timeout=10)
-        return True
-    except: return False
+        r=requests.post(f"https://api.telegram.org/bot{BOT_TOKEN}/sendMessage", json={"chat_id":target,"text":msg,"parse_mode":"HTML","disable_web_page_preview":True}, timeout=10)
+        print(f"TELE {r.status_code} {msg[:80]}")
+        return r.json().get('ok',False)
+    except Exception as e:
+        print(f"TELE ERR {e}")
+        return False
 
 def get_price_fast():
     try:
@@ -90,19 +134,33 @@ def get_price_fast():
     except: pass
     return 81500.0
 
-def get_balance_fast():
-    if not mexc: return 40.0
+def get_balance_real():
+    global mexc_error
+    if not mexc:
+        return 40.0, False, f"mexc None - {mexc_error}"
     try:
         bal=mexc.fetch_balance()
-        return float(bal.get('USDT',{}).get('free',0) or bal.get('total',{}).get('USDT',0) or 40.0)
-    except: return 40.0
+        free = bal.get('USDT',{}).get('free',0)
+        total = bal.get('USDT',{}).get('total',0)
+        # ถ้า free 0 อาจอยู่ใน Futures wallet ต้องดู total
+        usdt = free if free>0 else total
+        if usdt==0:
+            # ลองดูทุกสกุล
+            usdt = bal.get('total',{}).get('USDT',0)
+        return float(usdt), True, f"REAL Bal ${usdt:.2f} free ${free:.2f}"
+    except Exception as e:
+        err=str(e)
+        mexc_error=err[:300]
+        if "700007" in err:
+            return 40.0, False, f"700007 IP ไม่ได้รับอนุญาต → MEXC API → No Restriction\n{err[:150]}"
+        if "1001" in err or "Invalid" in err:
+            return 40.0, False, f"API KEY ผิดหรือหมดอายุ\n{err[:150]}"
+        return 40.0, False, f"Balance ERR {err[:200]}"
 
 def convert_btc_to_cont(btc_amount):
     try:
         btc=float(btc_amount)
-        if btc >= 1:  # พิมพ์เป็น CONT อยู่แล้ว
-            return int(btc)
-        # แปลง BTC -> CONT
+        if btc >= 1: return int(btc)
         cont=int(btc / CONTRACT_SIZE)
         if cont<1: cont=1
         return cont
@@ -110,6 +168,7 @@ def convert_btc_to_cont(btc_amount):
         return DEFAULT_CONT
 
 def mexc_open_futures(price, btc_input, side):
+    global mexc_error
     side=side.lower()
     if side in ['buy']: side='long'
     if side in ['sell']: side='short'
@@ -118,24 +177,26 @@ def mexc_open_futures(price, btc_input, side):
     btc_actual = cont * CONTRACT_SIZE
     notional = btc_actual * price
     margin = notional / LEVERAGE
-    balance = get_balance_fast()
+    balance, is_real, bal_msg = get_balance_real()
 
-    send_telegram(f"🔄 V13.7 TRY {side.upper()} {btc_actual:.4f} BTC = {cont} CONT\nPrice {price:.0f} Notional ${notional:.2f} Margin ${margin:.2f} Bal ${balance:.2f}\nทุน $40 → 0.0005 BTC=5 CONT Margin $5 แนะนำสุด ✅")
+    # Log แบบละเอียด
+    mode = "REAL" if is_real and mexc else "DRY RUN"
+    send_telegram(f"🔄 V13.8 {mode} TRY {side.upper()} {btc_actual:.4f} BTC={cont} CONT\nPrice {price:.0f} Notional ${notional:.2f} Margin ${margin:.2f}\nBal {bal_msg}\nAPI KEY len {len(MEXC_API_KEY)} {mexc_error[:100]}")
 
     if balance < margin:
-        send_telegram(f"⚠️ Margin ไม่พอ ต้อง ${margin:.2f} มี ${balance:.2f} ลด QTY ลง")
-        if cont>1:
-            cont=1
-            btc_actual=cont*CONTRACT_SIZE
-            notional=btc_actual*price
-            margin=notional/LEVERAGE
+        send_telegram(f"⚠️ Margin ไม่พอ ต้อง ${margin:.2f} มี ${balance:.2f}")
 
-    if not mexc:
+    if not mexc or not is_real:
+        # DRY RUN แต่บอกสาเหตุ
         positions.append({'entry':price,'qty':cont,'btc':btc_actual,'side':side,'time':time.time()})
         save_positions()
-        send_telegram(f"✅ DRY RUN {side.upper()} {btc_actual:.4f} BTC={cont} CONT @ {price:.0f} Margin ${margin:.2f}")
+        if not mexc:
+            send_telegram(f"✅ DRY RUN {side.upper()} {btc_actual:.4f} BTC={cont} CONT @ {price:.0f} Margin ${margin:.2f}\n⚠️ สาเหตุ DRY RUN:\n{mexc_error[:300]}\n\nวิธีแก้:\n1. Render → Environment → MEXC_API_KEY, MEXC_API_SECRET ใส่ใหม่\n2. MEXC → API → No Restriction\n3. เปิด Futures Permission\n4. โอน USDT ไป Futures Wallet")
+        else:
+            send_telegram(f"✅ DRY RUN {side.upper()} {btc_actual:.4f} BTC={cont} CONT @ {price:.0f}\n{bal_msg}\n{mexc_error[:200]}")
         return True
 
+    # REAL MODE
     try:
         try: mexc.set_leverage(LEVERAGE, SYMBOL_CCXT, {'marginMode':'CROSS'})
         except: pass
@@ -143,22 +204,28 @@ def mexc_open_futures(price, btc_input, side):
             order=mexc.create_market_buy_order(SYMBOL_CCXT, cont)
         else:
             order=mexc.create_market_sell_order(SYMBOL_CCXT, cont)
-        send_telegram(f"✅ V13.7 OPEN {side.upper()} {btc_actual:.4f} BTC={cont} CONT @ {price:.0f}$\nNotional ${notional:.2f} Margin ${margin:.2f} Bal ${balance:.2f}\nSL ${margin*0.034:.2f} TP ${margin*0.18:.2f} Ratio 5.3:1")
+        send_telegram(f"✅ REAL OPEN {side.upper()} {btc_actual:.4f} BTC={cont} CONT @ {price:.0f}$\nNotional ${notional:.2f} Margin ${margin:.2f} Bal ${balance:.2f}\nOrder {str(order.get('id',''))[:12]}")
         positions.append({'entry':price,'qty':cont,'btc':btc_actual,'side':side,'time':time.time()})
         save_positions()
         return True
     except Exception as e:
+        err=str(e)
+        if "700007" in err:
+            send_telegram(f"❌ 700007 IP ไม่ได้รับอนุญาต\nแก้: MEXC → API Management → IP Access → No Restriction → Save\nError: {err[:200]}")
+        else:
+            send_telegram(f"❌ REAL OPEN FAILED {btc_actual:.4f} BTC={cont} CONT\n{err[:300]}")
+        # fallback m2
         try:
             if side=='long':
                 order=mexc.create_order(SYMBOL_CCXT, 'market', 'buy', cont, None, {'openType':1})
             else:
                 order=mexc.create_order(SYMBOL_CCXT, 'market', 'sell', cont, None, {'openType':1})
-            send_telegram(f"✅ V13.7 OPEN m2 {side.upper()} {cont} CONT @ {price:.0f}$")
+            send_telegram(f"✅ REAL OPEN m2 {side.upper()} {cont} CONT @ {price:.0f}$")
             positions.append({'entry':price,'qty':cont,'btc':btc_actual,'side':side,'time':time.time()})
             save_positions()
             return True
         except Exception as e2:
-            send_telegram(f"❌ FAILED {btc_actual:.4f} BTC={cont} CONT\n{str(e)[:200]}")
+            send_telegram(f"❌ m2 FAIL {str(e2)[:200]}")
             return False
 
 def mexc_close_fast(price, side_filter=None):
@@ -169,7 +236,8 @@ def mexc_close_fast(price, side_filter=None):
     to_close = [p for p in positions if p['side']==side_filter] if side_filter in ['long','short'] else positions
     if not to_close: return False
     cont=sum(int(p['qty']) for p in to_close)
-    if mexc:
+    balance, is_real, bal_msg = get_balance_real()
+    if mexc and is_real:
         try:
             if to_close[0]['side']=='long': mexc.create_market_sell_order(SYMBOL_CCXT, cont)
             else: mexc.create_market_buy_order(SYMBOL_CCXT, cont)
@@ -187,8 +255,8 @@ def mexc_close_fast(price, side_filter=None):
     else: stats["losses"]+=1
     stats["total_pnl_pct"]+=pnl
     save_stats()
-    btc_total=sum(p['btc'] for p in to_close)
-    send_telegram(f"{'🟢' if pnl>0 else '🔴'} CLOSE {to_close[0]['side'].upper()} {btc_total:.4f} BTC={cont} CONT PnL {pnl:+.2f}%")
+    mode="REAL" if is_real else "DRY RUN"
+    send_telegram(f"{'🟢' if pnl>0 else '🔴'} {mode} CLOSE {to_close[0]['side'].upper()} {cont} CONT PnL {pnl:+.2f}% {bal_msg}")
     return True
 
 def manual_open(side='long', qty_str=None):
@@ -201,8 +269,9 @@ def manual_open(side='long', qty_str=None):
 
 def trading_loop():
     price=get_price_fast()
-    bal=get_balance_fast()
-    send_telegram(f"🚀 V13.7 FINAL 0.0005 BTC=5 CONT START {thai_time()}\nBal ${bal:.2f} Price {price:.0f}\nทุน $40 → 0.0005 BTC=5 CONT Margin $5 แนะนำสุด ✅\nNotional ${price*0.0005:.2f} SL $0.17 TP $0.91 Ratio 5.3:1\n/open long 0.0005 /open short 0.0005 /close")
+    bal, is_real, bal_msg = get_balance_real()
+    mode="REAL" if is_real else "DRY RUN"
+    send_telegram(f"🚀 V13.8 FIX DRY RUN→REAL START {thai_time()}\n{mode} | Bal {bal_msg} Price {price:.0f}\nAPI KEY len {len(MEXC_API_KEY)} | {mexc_error[:150]}\nทุน $40 → 0.0005 BTC=5 CONT Margin $5 ✅\n/open long 0.0005 /open short 0.0005")
     while True: time.sleep(60)
 
 threading.Thread(target=trading_loop, daemon=True).start()
@@ -226,12 +295,11 @@ def telegram_check_loop():
                 chat=str(msg.get("chat",{}).get("id",""))
 
                 if text in ["/start","/check","/status"]:
-                    bal=get_balance_fast()
+                    bal, is_real, bal_msg = get_balance_real()
                     price=get_price_fast()
                     wr=(stats["wins"]/stats["total_trades"]*100) if stats["total_trades"]>0 else 0
-                    notional=price*DEFAULT_BTC
-                    margin=notional/LEVERAGE
-                    send_telegram(f"✅ V13.7 FINAL 0.0005 BTC=5 CONT\n⏰ {thai_time()}\nPrice {price:.0f} Bal ${bal:.2f}\nPos {len(positions)} WR {wr:.1f}%\n\nทุน $40 แนะนำสุด ✅\n0.0005 BTC=5 CONT\nNotional ${notional:.2f} Margin ${margin:.2f}\nSL $0.17 (0.4%) TP $0.91 (2.2%) Ratio 5.3:1\n\n0.001 BTC=10 CONT Margin $10\n0.0005 BTC=5 CONT Margin $5 ✅\n0.0001 BTC=1 CONT Margin $1\n\n/open long 0.0005\n/open short 0.0005", chat)
+                    mode="✅ REAL MODE" if is_real and mexc else "⚠️ DRY RUN MODE"
+                    send_telegram(f"{mode}\n⏰ {thai_time()}\nPrice {price:.0f}\n{bal_msg}\nAPI KEY len {len(MEXC_API_KEY)} SECRET len {len(MEXC_API_SECRET)}\n{mexc_error[:200]}\n\nPos {len(positions)} WR {wr:.1f}%\nทุน $40 → 0.0005 BTC=5 CONT Margin $5\n/open long 0.0005 /open short 0.0005\n\nวิธีแก้ DRY RUN→REAL:\n1. Render ENV ใส่ KEY ใหม่\n2. MEXC API No Restriction\n3. Futures Permission ON\n4. โอน USDT ไป Futures Wallet", chat)
 
                 elif text.startswith("/open"):
                     parts=text_raw.split()
@@ -259,9 +327,13 @@ def telegram_check_loop():
                     threading.Thread(target=lambda: mexc_close_fast(get_price_fast(), f), daemon=True).start()
 
                 elif text=="/balance":
-                    bal=get_balance_fast()
+                    bal, is_real, bal_msg = get_balance_real()
                     price=get_price_fast()
-                    send_telegram(f"💰 Bal ${bal:.2f} Price {price:.0f}\n0.0005 BTC=5 CONT Notional ${price*0.0005:.2f} Margin ${price*0.0005/8:.2f} ✅ทุน $40\n0.001 BTC=10 CONT Margin ${price*0.001/8:.2f}\nSL 0.17 TP 0.91", chat)
+                    mode="REAL" if is_real else "DRY RUN"
+                    send_telegram(f"💰 {mode} Bal {bal_msg}\nPrice {price:.0f}\nAPI {mexc_error[:200]}\n0.0005 BTC=5 CONT Margin ${price*0.0005/8:.2f}", chat)
+
+                elif text=="/env":
+                    send_telegram(f"ENV CHECK\nAPI_KEY len {len(MEXC_API_KEY)}\nSECRET len {len(MEXC_API_SECRET)}\nBOT_TOKEN len {len(BOT_TOKEN)}\nCHAT_ID {CHAT_ID}\nMEXC {mexc_error[:300]}", chat)
 
         except Exception as e:
             print(f"Tele err {e}")
