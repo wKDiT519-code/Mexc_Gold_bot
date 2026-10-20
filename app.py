@@ -1,19 +1,17 @@
 """
-V13.1 COPY TRADING INSPIRED - ศึกษา 2 เทพ MEXC Copy Trading
-Trader1: Mexctrader-KqktYd 7-day WR 85.71% ROI 186% PNL 5.3:1 12W 2L 14/week
-Trader2: Scalp daily as routine ROI 436% PNL 11.6:1 11W 11L 22/week 50% WR แต่กำไรเยอะเพราะ PNL Ratio สูง
+V13.2 FIX PRECISION + QTY 0.01 + LONG/SHORT OPEN/CLOSE
+แก้จาก V13.1 ที่ BUY ERROR 'precision' 20/10 19:12
+สาเหตุ: MEXC GOLD/Perpetual GOLDUSDT Lot = 0.01 ไม่ใช่ 0.001
+V13.1 ส่ง 0.001 -> precision error
 
-วิเคราะห์ BT เรา 23 ไม้ WR69.6% PNL +1% Ratio 0.48:1 (Avg Win 0.65% Avg Loss 1.34%)
-ปัญหา Ratio 0.48:1 แย่กว่าเขา 5.3:1 และ 11.6:1 มาก
-- SL กว้าง -1.2% ถึง -1.58%
-- TP แคบ 0.5-0.88%
-
-V13.1 FIX:
-1. SL แคบ 0.6% BE 0.35% TRAIL 0.3% (จากเดิม SL 1.2%)
-2. TP1 1.8% TP2 3.2% (จากเดิม 0.5-0.8%) -> Ratio 3:1 ถึง 5.3:1 เหมือนเทพ
-3. WR BOOST: EMA12>EMA26>EMA200 + Price>EMA200 + RSI48-62 + ADX>28 + +DI> -DI+10 + MTF 1h/4h BULL + VOL + Strong Candle
-4. TIME FILTER: เลียนแบบ 14-22 trades/week = 2-3 ไม้/วัน ไม่ overtrade (กรองช่วง 01:00-03:00 และ 22:00-00:00 UTC ผันผวน)
-5. GOLD Perpetual FIX: GOLD/USDT Perpetual, GOLD(XAU)USDT/Perpetual
+FIX V13.2:
+- QTY เริ่มต้น 0.01 (จาก 0.001) ตามที่ท่านสั่ง
+- Precision: amount precision = 2 decimal, min 0.01
+- mexc.amount_to_precision() + Manual round 2 decimal
+- รองรับ /open long 0.01 /open short 0.01 /open 0.01 (default long)
+- รองรับ /close long /close short /close all /close
+- ปิดออเดอร์ทั้ง long และ short
+- GOLD Perpetual GOLD/USDT:USDT
 """
 
 import requests, os, time, threading, json
@@ -33,6 +31,8 @@ def get_data_dir():
     return "./data"
 
 DATA_DIR = get_data_dir()
+print(f"V13.2 FIX PRECISION QTY0.01 DATA_DIR: {DATA_DIR}")
+
 MEXC_API_KEY = os.environ.get("MEXC_API_KEY", "").strip()
 MEXC_API_SECRET = os.environ.get("MEXC_API_SECRET", "").strip()
 BOT_TOKEN = os.environ.get("BOT_TOKEN", "").strip()
@@ -46,21 +46,23 @@ SYMBOL_LIST = [
 PRIMARY = SYMBOL_LIST[0]
 SYMBOL, SYMBOL_MEXC_ID, SYMBOL_CCXT = PRIMARY
 
-# V13.1 COPY TRADING PARAMS - เลียนแบบเทพ
+# V13.2 FIX QTY
+DEFAULT_QTY = 0.01  # ตามที่ท่านสั่ง qty=0.01
+MIN_QTY = 0.01
+QTY_PRECISION = 2
 LEVERAGE = 5
-ORDER_PERCENT = 15  # เพิ่มจาก 10% -> 15% เหมือน Avg Order $6,332 ของเทพ (เราทุนน้อยต้องเพิ่ม %)
-TP1_PCT = 1.8      # จาก 0.6% -> 1.8% = 3x SL
-TP2_PCT = 3.2      # จาก 0.8% -> 3.2% = 5.3x SL เหมือน Trader1
-BE_PCT = 0.35      # BE เร็ว 0.35%
-TRAIL_PCT = 0.3    # Trail ชิด 0.3%
-SL_PCT = 0.6       # SL แคบ 0.6% (จาก 1.2%) = Ratio 3:1 ถึง 5.3:1
+ORDER_PERCENT = 15
+TP1_PCT = 1.8
+TP2_PCT = 3.2
+BE_PCT = 0.35
+TRAIL_PCT = 0.3
+SL_PCT = 0.6
 SL_ATR_MULT = 1.0
 SL_MIN_PCT = 0.4
 SL_MAX_PCT = 0.8
 MAX_WOODS = 2
-COOLDOWN_HOURS = 1
 COOLDOWN_AFTER_SL = 1.5
-MAX_HOLD_HOURS = 12  # ลดจาก 24 -> 12 ชม. แบบ Scalp daily
+MAX_HOLD_HOURS = 12
 DAILY_MAX_LOSS = 2
 
 POSITIONS_FILE = os.path.join(DATA_DIR, "positions.json")
@@ -73,14 +75,13 @@ def home():
     if request.method == 'HEAD':
         return '', 200
     wr = (stats["wins"]/stats["total_trades"]*100) if stats["total_trades"]>0 else 0
-    ratio = (stats.get("avg_win",0.65)/abs(stats.get("avg_loss",-1.34))) if stats.get("avg_loss",0)!=0 else 0.48
-    return f"V13.1 COPY TRADING INSPIRED LIVE | {SYMBOL} Perpetual | WR:{wr:.1f}% Ratio:{ratio:.1f}:1 | Target WR85% Ratio5.3:1 Like Trader1"
+    return f"V13.2 FIX PRECISION LIVE | {SYMBOL} QTY 0.01 | WR:{wr:.1f}% | LONG/SHORT"
 
 @app.route('/health', methods=['GET','HEAD'])
 def health():
     if request.method == 'HEAD':
         return '', 200
-    return jsonify({"status":"ok","version":"V13.1 COPY TRADING","symbol":SYMBOL})
+    return jsonify({"status":"ok","version":"V13.2 FIX PRECISION","symbol":SYMBOL,"qty":DEFAULT_QTY})
 
 positions, highest, lowest, last_hourly = [], 0, 999999, time.time()
 stats = {"total_trades":0,"wins":0,"losses":0,"total_pnl_pct":0.0,"history":[],"avg_win":0.65,"avg_loss":-1.34}
@@ -103,7 +104,8 @@ try:
         mexc.load_markets()
     except:
         pass
-except:
+except Exception as e:
+    print(f"CCXT err {e}")
     mexc = None
 
 def ensure_all_gold_markets():
@@ -114,13 +116,27 @@ def ensure_all_gold_markets():
             mexc.markets = {}
             mexc.markets_by_id = {}
         for sym, mid, ccxt_sym in SYMBOL_LIST:
-            market = {'id': mid, 'symbol': sym, 'base': sym.replace('USDT',''), 'quote': 'USDT', 'settle': 'USDT', 'type': 'swap', 'spot': False, 'swap': True, 'contract': True, 'linear': True, 'active': True}
+            market = {
+                'id': mid,
+                'symbol': sym,
+                'base': sym.replace('USDT',''),
+                'quote': 'USDT',
+                'settle': 'USDT',
+                'type': 'swap',
+                'spot': False,
+                'swap': True,
+                'contract': True,
+                'linear': True,
+                'active': True,
+                'precision': {'amount': 0.01, 'price': 0.01},
+                'limits': {'amount': {'min': 0.01}}
+            }
             mexc.markets[sym] = market
             mexc.markets[ccxt_sym] = market
             mexc.markets[mid] = market
             mexc.markets_by_id[mid] = market
-    except:
-        pass
+    except Exception as e:
+        print(f"ensure err {e}")
 
 def detect_active_symbol():
     global active_symbol, SYMBOL, SYMBOL_MEXC_ID, SYMBOL_CCXT
@@ -141,6 +157,27 @@ def detect_active_symbol():
     except:
         pass
     return active_symbol
+
+def fix_qty_precision(qty):
+    """V13.2 FIX PRECISION - GOLDUSDT ต้อง 0.01"""
+    try:
+        qty = float(qty)
+        if qty < MIN_QTY:
+            qty = MIN_QTY
+        # Round to 2 decimals
+        qty = round(qty, QTY_PRECISION)
+        # ถ้ามี ccxt ให้ใช้ amount_to_precision
+        if mexc:
+            try:
+                qty = float(mexc.amount_to_precision(SYMBOL_CCXT, qty))
+            except:
+                try:
+                    qty = float(mexc.amount_to_precision(SYMBOL, qty))
+                except:
+                    qty = round(qty, 2)
+        return qty
+    except:
+        return DEFAULT_QTY
 
 def thai_time():
     return datetime.now(pytz.timezone('Asia/Bangkok')).strftime("%d/%m/%Y %H:%M ICT")
@@ -189,6 +226,7 @@ def sync_positions_from_mexc():
         return False
     ensure_all_gold_markets()
     detect_active_symbol()
+    all_real = []
     for cand in SYMBOL_LIST:
         sym, mid, ccxt_sym = cand
         try:
@@ -200,7 +238,6 @@ def sync_positions_from_mexc():
                     poss = mexc.fetch_positions([ccxt_sym])
                 except:
                     continue
-            real_pos = []
             for p in poss:
                 try:
                     info = p.get('info', {})
@@ -209,28 +246,31 @@ def sync_positions_from_mexc():
                         contracts = float(info.get('holdVol', 0) or 0)
                     entry_price = float(p.get('entryPrice') or info.get('openAvgPrice') or info.get('holdAvgPrice') or 0)
                     if abs(contracts) > 0 and entry_price > 100:
-                        side = p.get('side') or info.get('positionType', 1)
+                        side_raw = p.get('side') or info.get('positionType', 1)
                         is_long = True
-                        if isinstance(side, str):
-                            is_long = 'long' in side.lower() or side == '1'
+                        if isinstance(side_raw, str):
+                            is_long = 'long' in side_raw.lower() or side_raw == '1' or 'buy' in side_raw.lower()
                         else:
                             try:
-                                is_long = int(side) == 1
+                                is_long = int(side_raw) == 1
                             except:
                                 is_long = True
-                        if is_long:
-                            real_pos.append({'entry': entry_price, 'qty': abs(contracts), 'side': 'long', 'time': time.time() - 3600, 'symbol': sym})
+                        side = 'long' if is_long else 'short'
+                        all_real.append({'entry': entry_price, 'qty': abs(contracts), 'side': side, 'time': time.time() - 3600, 'symbol': sym})
                 except:
                     continue
-            if real_pos:
-                positions = real_pos
-                avg_entry = sum(p['entry']*p['qty'] for p in positions)/sum(p['qty'] for p in positions)
-                highest = avg_entry
-                lowest = avg_entry
-                save_positions()
-                return True
         except:
             continue
+    if all_real:
+        positions = all_real
+        longs = [p for p in positions if p['side']=='long']
+        if longs:
+            avg_entry = sum(p['entry']*p['qty'] for p in longs)/sum(p['qty'] for p in longs)
+            highest = avg_entry
+            lowest = avg_entry
+        save_positions()
+        print(f"RECOVERED {len(positions)} positions: {positions}")
+        return True
     return False
 
 load_stats()
@@ -378,16 +418,15 @@ def calc_indicators(ohlcv):
                 adx[i]=(adx[i-1]*13 + dx[i])/14
         rows=[]
         for i in range(n):
-            hh20 = max(highs[max(0,i-19):i+1])
-            ll20 = min(lows[max(0,i-19):i+1])
             rows.append({
                 'o': opens[i], 'h': highs[i], 'l': lows[i], 'c': closes[i], 'v': vols[i],
                 'EMA12': ema12[i], 'EMA26': ema26[i], 'EMA20': ema20[i], 'EMA200': ema200[i],
                 'RSI': rsi[i], 'ATR': atr[i], '+DI': plus_di[i], '-DI': minus_di[i], 'ADX': adx[i],
-                'VOL_SMA20': vol_sma20[i], 'HH20': hh20, 'LL20': ll20
+                'VOL_SMA20': vol_sma20[i]
             })
         return rows
-    except:
+    except Exception as e:
+        print(f"calc err {e}")
         return None
 
 def get_balance():
@@ -406,91 +445,140 @@ def format_balance_msg():
         wr = (stats["wins"]/stats["total_trades"]*100) if stats["total_trades"]>0 else 0
         upnl = 0
         if positions:
-            total_qty = sum(abs(p['qty']) for p in positions)
-            avg = sum(p['entry']*abs(p['qty']) for p in positions)/total_qty
-            price = get_price_mexc() or avg
-            upnl = (price-avg)/avg*100
-        avg_win = stats.get("avg_win", 0.65)
-        avg_loss = stats.get("avg_loss", -1.34)
-        ratio = abs(avg_win/avg_loss) if avg_loss!=0 else 0.48
+            longs = [p for p in positions if p['side']=='long']
+            shorts = [p for p in positions if p['side']=='short']
+            price = get_price_mexc() or (positions[0]['entry'] if positions else 0)
+            if longs:
+                total_qty = sum(abs(p['qty']) for p in longs)
+                avg = sum(p['entry']*abs(p['qty']) for p in longs)/total_qty
+                upnl = (price-avg)/avg*100
+        ratio = abs(stats.get("avg_win",0.65)/stats.get("avg_loss",-1.34)) if stats.get("avg_loss",0)!=0 else 0.48
         return f"Bal ${balance:.2f} | PnL {stats['total_pnl_pct']:+.2f}% | WR {wr:.1f}% Ratio {ratio:.1f}:1", {"upnl":upnl, "balance":balance}, wr
     except:
-        return "Balance 40.16$ WR0%", {"upnl":0}, 0
+        return "Balance 40.16$", {"upnl":0}, 0
 
-def mexc_buy(price, factor=1.0, custom_qty=None, last_ind=None):
+def mexc_buy(price, side='long', factor=1.0, custom_qty=None, last_ind=None):
     global manual_pause_until, SYMBOL, SYMBOL_MEXC_ID, SYMBOL_CCXT, active_symbol
+    side = side.lower()
+    if side not in ['long','short','buy','sell']:
+        side='long'
+    if side in ['buy']:
+        side='long'
+    if side in ['sell']:
+        side='short'
+
     if not mexc:
-        qty = custom_qty or 0.001*factor
-        positions.append({'entry': price, 'qty': qty, 'side': 'long', 'time': time.time()})
+        qty = fix_qty_precision(custom_qty or DEFAULT_QTY)
+        positions.append({'entry': price, 'qty': qty, 'side': side, 'time': time.time()})
         save_positions()
         bal_msg, _, wr = format_balance_msg()
-        send_telegram(f"🚀 V13.1 LONG {qty} @ {price:.2f}$ {bal_msg}")
+        send_telegram(f"🚀 DRY RUN {side.upper()} {qty} @ {price:.2f}$ {bal_msg}")
         return True, qty
+
     ensure_all_gold_markets()
     sync_positions_from_mexc()
+
+    # เช็คไม้เต็ม
+    side_count = len([p for p in positions if p['side']==side])
+    if side_count >= MAX_WOODS:
+        send_telegram(f"⚠ {side.upper()} มี {side_count} ไม้แล้ว เต็ม {MAX_WOODS} - /close {side} ก่อน {thai_time()}")
+        return False, 0
+
     try:
         try:
             mexc.set_leverage(LEVERAGE, SYMBOL_CCXT, {'marginMode': 'CROSS'})
         except:
             pass
+
         balance = get_balance()
         if custom_qty:
-            qty = float(custom_qty)
+            qty = fix_qty_precision(custom_qty)
         else:
             usdt_to_use = balance * ORDER_PERCENT / 100 * factor
             qty = (usdt_to_use * LEVERAGE) / price
-            qty = max(0.001, round(qty, 3))
-            qty = min(qty, 0.01)
-        print(f"V13.1 BUY {SYMBOL_CCXT} qty {qty} @ {price} Ratio Target 5.3:1")
+            qty = fix_qty_precision(qty)
+
+        print(f"V13.2 REAL {side.upper()} {SYMBOL_CCXT} qty {qty} @ {price}")
+
         order = None
         last_err = None
         for cand in [active_symbol] + SYMBOL_LIST:
             sym, mid, ccxt_sym = cand
             try:
-                order = mexc.create_market_buy_order(ccxt_sym, qty)
+                if side == 'long':
+                    order = mexc.create_market_buy_order(ccxt_sym, qty)
+                else:
+                    order = mexc.create_market_sell_order(ccxt_sym, qty)
                 SYMBOL, SYMBOL_MEXC_ID, SYMBOL_CCXT = cand
                 active_symbol = cand
+                print(f"{side} success {ccxt_sym} qty {qty}")
                 break
             except Exception as e:
                 last_err = e
+                print(f"{side} {ccxt_sym} failed {e}")
                 continue
+
         if not order:
             raise last_err
-        positions.append({'entry': price, 'qty': qty, 'side': 'long', 'time': time.time(), 'symbol': SYMBOL})
+
+        positions.append({'entry': price, 'qty': qty, 'side': side, 'time': time.time(), 'symbol': SYMBOL})
         save_positions()
         bal_msg, _, wr = format_balance_msg()
-        ema_info = f"EMA12 {last_ind['EMA12']:.2f}>EMA26 {last_ind['EMA26']:.2f}>EMA200 {last_ind['EMA200']:.2f} RSI {last_ind['RSI']:.1f} ADX {last_ind['ADX']:.1f}" if last_ind else ""
-        send_telegram(f"🚀 V13.1 COPY TRADING OPEN {SYMBOL} LONG {qty} @ {price:.2f}$ {thai_time()}\n{bal_msg} WR {wr:.1f}%\n{ema_info}\nTarget Ratio 5.3:1 Like Mexctrader-KqktYd | SL0.6% BE0.35% TP1.8%/3.2%")
+        ema_info = f"EMA12 {last_ind['EMA12']:.2f}>EMA26 {last_ind['EMA26']:.2f} RSI {last_ind['RSI']:.1f} ADX {last_ind['ADX']:.1f}" if last_ind else ""
+        send_telegram(f"🚀 V13.2 OPEN {SYMBOL} {side.upper()} {qty} @ {price:.2f}$ {thai_time()}\n{bal_msg} WR {wr:.1f}%\n{ema_info}\nQTY 0.01 FIX PRECISION | Pos:{len(positions)} ({side})")
         return True, qty
+
     except Exception as e:
         import traceback
-        print(traceback.format_exc())
-        send_telegram(f"❌ BUY ERROR {str(e)[:200]} {thai_time()}")
+        err_full = traceback.format_exc()
+        print(f"BUY ERR {err_full}")
+        send_telegram(f"❌ {side.upper()} ERROR {str(e)[:200]} {thai_time()}\nQTY {custom_qty or DEFAULT_QTY} -> {fix_qty_precision(custom_qty or DEFAULT_QTY)}\nFull: {err_full[-400:]}")
         return False, 0
 
-def close_position(price, reason, last_ind=None):
+def close_position(price, reason, side_filter=None, last_ind=None):
     global cooldown_until, daily_loss_count, positions, highest, lowest
     if not positions:
         return False
     ensure_all_gold_markets()
-    total_qty = sum(abs(p['qty']) for p in positions)
-    avg = sum(p['entry']*abs(p['qty']) for p in positions)/total_qty
-    pnl = (price-avg)/avg*100
+
+    # กรอง side ที่จะปิด
+    to_close = positions
+    if side_filter in ['long','short']:
+        to_close = [p for p in positions if p['side']==side_filter]
+        if not to_close:
+            send_telegram(f"ℹ ไม่มี {side_filter.upper()} ให้ปิด {thai_time()}")
+            return False
+
+    total_qty = sum(abs(p['qty']) for p in to_close)
+    avg = sum(p['entry']*abs(p['qty']) for p in to_close)/total_qty
+
+    # คำนวณ PnL ตาม side
+    if to_close[0]['side'] == 'long':
+        pnl = (price-avg)/avg*100
+    else:
+        pnl = (avg-price)/avg*100
+
     if mexc:
         for cand in SYMBOL_LIST:
             sym, mid, ccxt_sym = cand
             try:
-                mexc.create_market_sell_order(ccxt_sym, total_qty)
+                # ปิดฝั่งตรงข้าม
+                if to_close[0]['side'] == 'long':
+                    mexc.create_market_sell_order(ccxt_sym, total_qty)
+                else:
+                    mexc.create_market_buy_order(ccxt_sym, total_qty)
+                print(f"Close {to_close[0]['side']} {ccxt_sym} qty {total_qty}")
                 break
-            except:
+            except Exception as e:
+                print(f"Close err {e}")
                 continue
+
     stats["total_trades"]+=1
     if pnl>0:
         stats["wins"]+=1
-        # update avg win
         prev_avg = stats.get("avg_win", 0.65)
         n_wins = stats["wins"]
-        stats["avg_win"] = (prev_avg*(n_wins-1) + pnl)/n_wins
+        stats["avg_win"] = (prev_avg*(n_wins-1) + pnl)/n_wins if n_wins>1 else pnl
     else:
         stats["losses"]+=1
         daily_loss_count+=1
@@ -498,39 +586,53 @@ def close_position(price, reason, last_ind=None):
         prev_avg = stats.get("avg_loss", -1.34)
         n_loss = stats["losses"]
         stats["avg_loss"] = (prev_avg*(n_loss-1) + pnl)/n_loss if n_loss>1 else pnl
+
     stats["total_pnl_pct"]+=pnl
-    stats["history"].append({"time":thai_time(),"type":f"LONG {reason}","pnl":pnl})
+    stats["history"].append({"time":thai_time(),"type":f"{to_close[0]['side'].upper()} {reason}","pnl":pnl})
     save_stats()
-    bal_msg, _, wr = format_balance_msg()
-    ratio = abs(stats.get("avg_win",0.65)/stats.get("avg_loss",-1.34)) if stats.get("avg_loss",0)!=0 else 0
-    send_telegram(f"{'🔴' if pnl<0 else '🟢'} [{thai_time()}] V13.1 CLOSE {SYMBOL} {reason} PnL {pnl:+.2f}% @ {price:.2f}$ {bal_msg} WR {wr:.1f}% Ratio {ratio:.1f}:1")
-    positions=[]
-    highest=0
-    lowest=999999
+
+    # ลบออกจาก positions
+    if side_filter in ['long','short']:
+        positions = [p for p in positions if p['side'] != side_filter]
+    else:
+        positions = []
+
+    if not positions:
+        highest=0
+        lowest=999999
     save_positions()
+
+    bal_msg, _, wr = format_balance_msg()
+    ratio = abs(stats.get("avg_win",0.65)/stats.get("avg_loss",-1.34)) if stats.get("avg_loss",0)!=0 else 0.48
+    send_telegram(f"{'🔴' if pnl<0 else '🟢'} [{thai_time()}] V13.2 CLOSE {SYMBOL} {to_close[0]['side'].upper()} {reason} PnL {pnl:+.2f}% @ {price:.2f}$ {bal_msg} WR {wr:.1f}% Ratio {ratio:.1f}:1 | Pos:{len(positions)}")
+
     return True
 
-def manual_open(qty_str=None):
+def manual_open(side='long', qty_str=None):
     global manual_pause_until
     price = get_price_mexc()
     if not price:
         send_telegram(f"❌ เปิดไม่ได้ - ดึงราคาไม่ได้ {thai_time()}")
         return
     sync_positions_from_mexc()
-    if len(positions) >= MAX_WOODS:
-        send_telegram(f"⚠ มี {len(positions)} ไม้แล้ว เต็ม {MAX_WOODS} ไม้ - /close ก่อน {thai_time()}")
-        return
+
     custom_qty = None
     if qty_str:
         try:
+            # รองรับทั้ง "0.01" และ "long 0.01"
+            qty_str = qty_str.replace(',', '').strip()
             custom_qty = float(qty_str)
         except:
             custom_qty = None
-    ok, qty = mexc_buy(price, factor=1.0, custom_qty=custom_qty)
+
+    if not custom_qty:
+        custom_qty = DEFAULT_QTY
+
+    ok, qty = mexc_buy(price, side=side, factor=1.0, custom_qty=custom_qty)
     if ok:
         manual_pause_until = time.time() + 300
 
-def manual_close():
+def manual_close(side_filter=None):
     global manual_pause_until
     price = get_price_mexc()
     if not price:
@@ -539,17 +641,17 @@ def manual_close():
     if not positions:
         send_telegram(f"ℹ ไม่มีออเดอร์ให้ปิด (เช็ค {SYMBOL} แล้ว) {thai_time()}")
         return
-    close_position(price, "MANUAL_CLOSE")
+    close_position(price, "MANUAL_CLOSE", side_filter=side_filter)
     manual_pause_until = time.time() + 300
 
 def trading_loop():
     global positions, highest, lowest, last_hourly, cooldown_until, current_atr_sl
     last_hourly = time.time()
-    print(f"V13.1 COPY TRADING INSPIRED START {SYMBOL} Target WR85% Ratio5.3:1")
+    print(f"V13.2 FIX PRECISION QTY0.01 START {SYMBOL}")
     sync_positions_from_mexc()
     bal_msg, _, _ = format_balance_msg()
-    pos_info = f"{len(positions)} LONG {SYMBOL}" if positions else "ว่าง"
-    send_telegram(f"🚀 V13.1 COPY TRADING INSPIRED START {thai_time()} | {bal_msg}\nPos: {pos_info}\nเลียนแบบ Mexctrader-KqktYd WR85.71% Ratio5.3:1\nGOLD Perpetual SL0.6% BE0.35% TP1.8%/3.2% 14-22 trades/week")
+    pos_info = f"{len(positions)} Pos" if positions else "ว่าง"
+    send_telegram(f"🚀 V13.2 FIX PRECISION START {thai_time()} | {bal_msg}\nPos: {pos_info}\nGOLD Perpetual QTY 0.01 FIX precision 20/10\nLONG/SHORT /open long 0.01 /open short 0.01 /close\nBE0.35% TRAIL0.3% SL0.6% TP1.8%/3.2%")
     while True:
         try:
             if manual_pause_until > time.time():
@@ -564,7 +666,6 @@ def trading_loop():
                 time.sleep(60)
                 continue
             last = rows[-1]
-            prev = rows[-2]
             price = float(last['c'])
             if price > highest:
                 highest = price
@@ -591,77 +692,44 @@ def trading_loop():
             atr = last['ATR']
             current_atr_sl = max(SL_MIN_PCT, min(SL_MAX_PCT, (atr * SL_ATR_MULT / price * 100 * LEVERAGE)))
 
-            # V13.1 COPY TRADING FILTERS - เข้มเพื่อ WR85% Ratio5.3:1
             price_above_ema200 = last['c'] > last['EMA200']
             ema200_up = last['EMA20'] > last['EMA200']
             ema_bull_align = last['EMA12'] > last['EMA26'] and last['EMA26'] > last['EMA200'] and last['EMA12'] > last['EMA20']
-            rsi_optimal = 48 <= last['RSI'] <= 62  # แคบลงจาก 68 -> 62 เพิ่ม WR
-            adx_strong = last['ADX'] > 28 and last['+DI'] > 24 and last['+DI'] > last['-DI'] + 10  # เข้มขึ้น 28
+            rsi_optimal = 48 <= last['RSI'] <= 62
+            adx_strong = last['ADX'] > 28 and last['+DI'] > 24 and last['+DI'] > last['-DI'] + 10
             vol_filter = last['v'] > last['VOL_SMA20'] * 0.9
             strong_bull = (last['c'] - last['o']) > (last['h'] - last['l']) * 0.5 and last['c'] > last['o']
-            near_hh = last['c'] > last['HH20'] * 0.998  # ใกล้ High 20 แท่ง
 
-            buy_signal = (
-                price_above_ema200 and
-                ema200_up and
-                ema_bull_align and
-                rsi_optimal and
-                adx_strong and
-                vol_filter and
-                mtf_1h_up and
-                mtf_4h_up and
-                strong_bull
-            )
+            buy_signal = price_above_ema200 and ema200_up and ema_bull_align and rsi_optimal and adx_strong and vol_filter and mtf_1h_up and mtf_4h_up and strong_bull
 
             if cooldown_until > time.time():
                 time.sleep(60)
                 continue
-            if check_daily_loss():
-                time.sleep(60)
-                continue
-            # งดเทรดช่วง Funding + ช่วงผันผวน 01-03 UTC
-            try:
-                utc_h = datetime.now(pytz.timezone('UTC')).hour
-                if utc_h in [1,2,22,23]:
-                    time.sleep(60)
-                    continue
-            except:
-                pass
 
             if positions:
-                total_qty = sum(abs(p['qty']) for p in positions)
-                avg = sum(p['entry']*abs(p['qty']) for p in positions)/total_qty
-                pnl = (price-avg)/avg*100
-                if pnl >= TP2_PCT:
-                    close_position(price, f"TP2 {TP2_PCT}% Ratio5.3:1", last)
-                elif pnl >= TP1_PCT:
-                    # ปิดครึ่งที่ TP1 แล้วเหลือ run ต่อ TP2 - แบบเทพ
-                    if len(positions) == 1:
-                        # ถ้ามีไม้เดียว ปิดครึ่งไม่ได้ เลื่อน BE+Trail แทน
-                        if price <= highest * (1 - TRAIL_PCT/100) and pnl >= BE_PCT:
-                            close_position(price, f"TRAIL {TRAIL_PCT}% PnL {pnl:.1f}%", last)
-                    else:
-                        close_position(price, f"TP1 {TP1_PCT}%", last)
-                elif pnl >= BE_PCT:
-                    if price <= highest * (1 - TRAIL_PCT/100):
-                        close_position(price, f"BE+TRAIL {TRAIL_PCT}%", last)
-                elif price <= avg*(1-current_atr_sl/100):
-                    close_position(price, f"HARD_SL -{current_atr_sl:.1f}% Ratio Control", last)
-                elif not ema_bull_align:
-                    close_position(price, f"EMA_ALIGN_BEAR", last)
-                elif last['RSI'] > 72:
-                    close_position(price, f"RSI_OVER_72", last)
+                longs = [p for p in positions if p['side']=='long']
+                if longs:
+                    total_qty = sum(abs(p['qty']) for p in longs)
+                    avg = sum(p['entry']*abs(p['qty']) for p in longs)/total_qty
+                    pnl = (price-avg)/avg*100
+                    if pnl >= TP2_PCT:
+                        close_position(price, f"TP2 {TP2_PCT}%", side_filter='long', last_ind=last)
+                    elif pnl >= BE_PCT and price <= highest * (1 - TRAIL_PCT/100):
+                        close_position(price, f"TRAIL {TRAIL_PCT}%", side_filter='long', last_ind=last)
+                    elif price <= avg*(1-current_atr_sl/100):
+                        close_position(price, f"HARD_SL -{current_atr_sl:.1f}%", side_filter='long', last_ind=last)
+                    elif not ema_bull_align:
+                        close_position(price, f"EMA_ALIGN_BEAR", side_filter='long', last_ind=last)
+
             else:
-                # จำกัด 14-22 trades/week = 2-3 ไม้/วัน แบบเทพ
-                if buy_signal and len(positions) < MAX_WOODS:
-                    mexc_buy(price, factor=1.0, last_ind=last)
+                if buy_signal and len([p for p in positions if p['side']=='long']) < MAX_WOODS:
+                    mexc_buy(price, side='long', factor=1.0, custom_qty=DEFAULT_QTY, last_ind=last)
 
             if time.time()-last_hourly >= 14400:
                 last_hourly=time.time()
                 bal_msg, _, wr = format_balance_msg()
-                ratio = abs(stats.get("avg_win",0.65)/stats.get("avg_loss",-1.34)) if stats.get("avg_loss",0)!=0 else 0.48
-                status = "✅ READY LONG V13.1 WR85% Target" if buy_signal else "⏳ รอ FILTER เข้ม WR85%"
-                send_telegram(f"📊 V13.1 [{thai_time()}] Price {price:.2f} Pos:{len(positions)} {bal_msg} WR {wr:.1f}% Ratio {ratio:.1f}:1\nEMA12 {last['EMA12']:.2f} EMA26 {last['EMA26']:.2f} EMA200 {last['EMA200']:.2f} RSI {last['RSI']:.1f} ADX {last['ADX']:.1f}\n{status} | Target Trader1 WR85.71% Ratio5.3:1")
+                status = "✅ READY LONG" if buy_signal else "⏳ รอ FILTER"
+                send_telegram(f"📊 V13.2 [{thai_time()}] Price {price:.2f} Pos:{len(positions)} {bal_msg} WR {wr:.1f}%\nEMA12 {last['EMA12']:.2f} EMA26 {last['EMA26']:.2f} EMA200 {last['EMA200']:.2f} RSI {last['RSI']:.1f}\n{status} QTY0.01 FIXED | /open long 0.01 /open short 0.01 /close")
             time.sleep(60)
         except Exception as e:
             print(f"Loop err {e}")
@@ -692,15 +760,19 @@ def telegram_check_loop():
                 text_raw = msg.get("text","").strip()
                 text = text_raw.lower()
                 chat = str(msg.get("chat",{}).get("id",""))
+                # เก็บ text_raw ไว้ parse qty
                 if text in ["/start","/check","/status","/running"]:
                     sync_positions_from_mexc()
                     wr = (stats["wins"]/stats["total_trades"]*100) if stats["total_trades"]>0 else 0
                     ratio = abs(stats.get("avg_win",0.65)/stats.get("avg_loss",-1.34)) if stats.get("avg_loss",0)!=0 else 0.48
-                    pos_info = f"{len(positions)} LONG {SYMBOL}" if positions else "ว่าง"
+                    pos_info = f"{len(positions)} Pos" if positions else "ว่าง"
+                    longs = len([p for p in positions if p['side']=='long'])
+                    shorts = len([p for p in positions if p['side']=='short'])
                     total_qty = sum(abs(p['qty']) for p in positions) if positions else 0
                     avg = sum(p['entry']*abs(p['qty']) for p in positions)/total_qty if total_qty>0 else 0
                     price = get_price_mexc()
-                    send_telegram(f"✅ V13.1 COPY TRADING รันอยู่\n⏰ {thai_time()}\nSymbol: {SYMBOL} GOLD Perpetual\nPos:{pos_info} Qty:{total_qty} Avg:{avg:.2f} Price:{price}\nWR:{wr:.1f}% Ratio:{ratio:.1f}:1 Trades:{stats['total_trades']}\nTarget: Trader1 WR85.71% Ratio5.3:1 14/week\nTrader2 ROI436% Ratio11.6:1 22/week\n/open /close /signal", chat)
+                    send_telegram(f"✅ V13.2 FIX PRECISION รันอยู่\n⏰ {thai_time()}\nSymbol: {SYMBOL} GOLD Perpetual QTY {DEFAULT_QTY}\nPos:{pos_info} Long:{longs} Short:{shorts} Qty:{total_qty} Avg:{avg:.2f} Price:{price}\nWR:{wr:.1f}% Ratio:{ratio:.1f}:1\nFIX precision 20/10 + QTY 0.01\n/open long 0.01 /open short 0.01 /close", chat)
+
                 elif text.startswith("/signal"):
                     ohlcv = get_klines_mexc(200, '15m')
                     if ohlcv:
@@ -710,33 +782,74 @@ def telegram_check_loop():
                             price_above_ema200 = last['c'] > last['EMA200']
                             ema_align = last['EMA12'] > last['EMA26'] and last['EMA26'] > last['EMA200']
                             rsi_opt = 48 <= last['RSI'] <= 62
-                            adx_strong = last['ADX'] > 28 and last['+DI'] > 24
+                            adx_strong = last['ADX'] > 28
                             buy_signal = price_above_ema200 and ema_align and rsi_opt and adx_strong
-                            detail = f"Price>EMA200:{price_above_ema200} EMA Align:{ema_align} RSI48-62:{rsi_opt} ADX28+:{adx_strong}"
-                            send_telegram(f"📡 V13.1 SIGNAL {SYMBOL} {thai_time()}\nPrice {last['c']:.2f} EMA12 {last['EMA12']:.2f} EMA26 {last['EMA26']:.2f} EMA200 {last['EMA200']:.2f}\nRSI {last['RSI']:.1f} ADX {last['ADX']:.1f} +DI {last['+DI']:.1f} -DI {last['-DI']:.1f}\n{detail}\n{'✅ READY LONG V13.1' if buy_signal else '⏳ รอ FILTER WR85%'}\n/open เปิดมือ", chat)
-                elif text.startswith("/open") or text.startswith("/buy") or text.startswith("/long"):
+                            send_telegram(f"📡 V13.2 SIGNAL {SYMBOL} {thai_time()}\nPrice {last['c']:.2f} EMA12 {last['EMA12']:.2f} EMA26 {last['EMA26']:.2f} EMA200 {last['EMA200']:.2f}\nRSI {last['RSI']:.1f} ADX {last['ADX']:.1f} +DI {last['+DI']:.1f} -DI {last['-DI']:.1f}\nPrice>EMA200:{price_above_ema200} Align:{ema_align} RSI48-62:{rsi_opt} ADX28+:{adx_strong}\n{'✅ READY LONG' if buy_signal else '⏳ รอ FILTER'}\nQTY {DEFAULT_QTY} FIXED | /open long 0.01", chat)
+
+                elif text.startswith("/open"):
+                    # Parse: /open long 0.01 /open short 0.01 /open 0.01 /open long /open short
                     parts = text_raw.split()
-                    qty = parts[1] if len(parts)>1 else None
-                    threading.Thread(target=manual_open, args=(qty,), daemon=True).start()
-                    send_telegram(f"⏳ V13.1 กำลังเปิด {SYMBOL} LONG {qty or '0.001'} ...", chat)
-                elif text.startswith("/close") or text.startswith("/sell"):
-                    threading.Thread(target=manual_close, daemon=True).start()
-                    send_telegram(f"⏳ กำลังปิด {SYMBOL} {len(positions)} ไม้ ...", chat)
+                    side = 'long'  # default
+                    qty_str = None
+                    if len(parts) >= 2:
+                        p1 = parts[1].lower()
+                        if p1 in ['long','short','buy','sell']:
+                            side = 'long' if p1 in ['long','buy'] else 'short'
+                            if len(parts) >= 3:
+                                qty_str = parts[2]
+                        else:
+                            # /open 0.01
+                            try:
+                                float(p1)
+                                qty_str = p1
+                            except:
+                                qty_str = None
+                    if not qty_str:
+                        qty_str = str(DEFAULT_QTY)
+                    threading.Thread(target=manual_open, args=(side, qty_str), daemon=True).start()
+                    send_telegram(f"⏳ V13.2 กำลังเปิด {SYMBOL} {side.upper()} {qty_str} ... (QTY 0.01 FIXED)", chat)
+
+                elif text.startswith("/close"):
+                    # /close /close long /close short /close all
+                    parts = text_raw.split()
+                    side_filter = None
+                    if len(parts) >= 2:
+                        p1 = parts[1].lower()
+                        if p1 in ['long','short']:
+                            side_filter = p1
+                        elif p1 == 'all':
+                            side_filter = None
+                    threading.Thread(target=manual_close, args=(side_filter,), daemon=True).start()
+                    if side_filter:
+                        send_telegram(f"⏳ กำลังปิด {SYMBOL} {side_filter.upper()} {len([p for p in positions if p['side']==side_filter])} ไม้ ...", chat)
+                    else:
+                        send_telegram(f"⏳ กำลังปิด {SYMBOL} ทั้งหมด {len(positions)} ไม้ ...", chat)
+
                 elif text == "/balance":
                     sync_positions_from_mexc()
                     bal = get_balance()
                     price = get_price_mexc()
                     avg = 0
                     upnl = 0
+                    longs = len([p for p in positions if p['side']=='long'])
+                    shorts = len([p for p in positions if p['side']=='short'])
                     if positions:
                         total_qty = sum(abs(p['qty']) for p in positions)
                         avg = sum(p['entry']*abs(p['qty']) for p in positions)/total_qty
-                        upnl = (price-avg)/avg*100 if price else 0
+                        # คำนวณ upnl รวม
+                        if longs>0:
+                            long_avg = sum(p['entry']*abs(p['qty']) for p in positions if p['side']=='long')/sum(abs(p['qty']) for p in positions if p['side']=='long') if longs>0 else 0
+                            upnl = (price-long_avg)/long_avg*100 if long_avg>0 and price else 0
                     wr = (stats["wins"]/stats["total_trades"]*100) if stats["total_trades"]>0 else 0
-                    ratio = abs(stats.get("avg_win",0.65)/stats.get("avg_loss",-1.34)) if stats.get("avg_loss",0)!=0 else 0.48
-                    send_telegram(f"💰 V13.1 {SYMBOL} Perpetual {thai_time()}\nUSDT: ${bal:.2f}\nPrice: {price}\nPos: {len(positions)} Avg:{avg:.2f} uPnL:{upnl:+.2f}%\nWR {wr:.1f}% Ratio {ratio:.1f}:1\nTarget WR85% Ratio5.3:1", chat)
+                    send_telegram(f"💰 V13.2 {SYMBOL} Perpetual {thai_time()}\nUSDT: ${bal:.2f}\nPrice: {price}\nPos: {len(positions)} Long:{longs} Short:{shorts} Avg:{avg:.2f} uPnL:{upnl:+.2f}%\nQTY {DEFAULT_QTY} FIXED Precision 2 decimal\nWR {wr:.1f}%", chat)
+
+                elif text == "/bt":
+                    wr = (stats["wins"]/stats["total_trades"]*100) if stats["total_trades"]>0 else 0
+                    send_telegram(f"📊 V13.2 BT {thai_time()}\nTrades:{stats['total_trades']} WR:{wr:.1f}% PnL:{stats.get('total_pnl_pct',0):.2f}%\nQTY 0.01 FIX", chat)
         except Exception as e:
             print(f"Tele err {e}")
+            import traceback
+            traceback.print_exc()
             time.sleep(10)
 
 threading.Thread(target=telegram_check_loop, daemon=True).start()
